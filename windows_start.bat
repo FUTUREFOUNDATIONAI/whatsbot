@@ -4,7 +4,7 @@ if "%1"=="--server" goto :server
 
 setlocal EnableDelayedExpansion
 
-:: Usado pela tarefa de inicializacao automatica do Windows. Faz todo o
+:: Usado pelo atalho de inicializacao automatica do Windows. Faz todo o
 :: bootstrap normal, mas nao abre o navegador nem deixa uma janela visivel.
 set "AUTOSTART=0"
 if /I "%1"=="--autostart" set "AUTOSTART=1"
@@ -91,7 +91,7 @@ if not exist "!PY_INSTALLER!" (
     echo        Ou instale manualmente: https://www.python.org/downloads/
     echo        IMPORTANTE: Marque "Add Python to PATH" durante a instalacao.
     echo.
-    pause
+    if "!AUTOSTART!"=="0" pause
     exit /b 1
 )
 
@@ -114,7 +114,7 @@ if not "!INSTALL_EXIT!"=="0" (
     echo        Tente instalar manualmente: https://www.python.org/downloads/
     echo        IMPORTANTE: Marque "Add Python to PATH" durante a instalacao.
     echo.
-    pause
+    if "!AUTOSTART!"=="0" pause
     exit /b 1
 )
 
@@ -129,7 +129,7 @@ if not !ERRORLEVEL!==0 (
     echo        Tente reiniciar o computador e executar windows_start.bat novamente.
     echo        Ou instale manualmente: https://www.python.org/downloads/
     echo.
-    pause
+    if "!AUTOSTART!"=="0" pause
     exit /b 1
 )
 
@@ -156,7 +156,7 @@ if !VERSION_OK!==0 (
     echo [ERRO] Python !PY_VER! detectado, mas o WhatsBot precisa do 3.11 ou superior.
     echo        Baixe a versao mais recente em: https://www.python.org/downloads/
     echo.
-    pause
+    if "!AUTOSTART!"=="0" pause
     exit /b 1
 )
 
@@ -182,7 +182,7 @@ if not !ERRORLEVEL!==0 (
             echo        Reinstale o Python marcando a opcao "pip" no instalador.
             echo        https://www.python.org/downloads/
             echo.
-            pause
+            if "!AUTOSTART!"=="0" pause
             exit /b 1
         )
     )
@@ -196,7 +196,7 @@ if not exist "bin\gowa.exe" (
     echo        O download do WhatsBot esta incompleto ou corrompido.
     echo        Baixe novamente o WhatsBot completo.
     echo.
-    pause
+    if "!AUTOSTART!"=="0" pause
     exit /b 1
 )
 echo [OK] gowa.exe encontrado.
@@ -219,7 +219,7 @@ pip install -q -r requirements.txt
 echo.
 echo [OK] Ambiente pronto!
 
-:: Quando iniciado pelo Agendador, rodar o servidor neste processo. Assim o
+:: Quando iniciado pelo atalho oculto, rodar o servidor neste processo. Assim o
 :: WhatsBot volta no proximo logon sem abrir uma aba do navegador.
 if "!AUTOSTART!"=="1" (
     endlocal
@@ -287,17 +287,20 @@ set "WHATSBOT_DIR=%~dp0"
 :: Um atalho na pasta Inicializar do usuario nao exige permissao de administrador
 :: (ao contrario de algumas configuracoes do Agendador de Tarefas).
 :: Gerar as aspas com [char]34 evita que sejam consumidas entre CMD e PowerShell.
-:: O CMD recebe /d /s /c ""caminho do bat" --autostart".
+:: O comando fica no proprio atalho, sem precisar de um arquivo PS1 separado.
+:: Resolver a BAT pelo diretorio do atalho evita inserir o caminho como codigo.
+:: O PowerShell e o CMD iniciam ocultos; WindowStyle = 7 sozinho so minimiza.
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ErrorActionPreference = 'Stop'; " ^
-  "$bat = Join-Path $env:WHATSBOT_DIR 'windows_start.bat'; " ^
+  "$command = '$dir = (Get-Location).Path; $bat = Join-Path $dir ''windows_start.bat''; ' + " ^
+  "  'Start-Process -FilePath $env:ComSpec -ArgumentList (''/d /s /c {0}{0}{1}{0} --autostart{0}'' -f [char]34, $bat) -WorkingDirectory $dir -WindowStyle Hidden'; " ^
   "$startup = [Environment]::GetFolderPath('Startup'); " ^
   "$shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $startup 'WhatsBot.lnk')); " ^
-  "$shortcut.TargetPath = $env:ComSpec; " ^
-  "$shortcut.Arguments = ('/d /s /c {0}{0}{1}{0} --autostart{0}' -f [char]34, $bat); " ^
-  "$shortcut.WorkingDirectory = Split-Path $bat; " ^
+  "$shortcut.TargetPath = Join-Path $PSHOME 'powershell.exe'; " ^
+  "$shortcut.Arguments = ('-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -Command {0}{1}{0}' -f [char]34, $command); " ^
+  "$shortcut.WorkingDirectory = $env:WHATSBOT_DIR; " ^
   "$shortcut.WindowStyle = 7; " ^
-  "$shortcut.Description = 'Inicia o WhatsBot automaticamente no logon.'; " ^
+  "$shortcut.Description = 'Inicia o WhatsBot em segundo plano no logon.'; " ^
   "$shortcut.Save()"
 
 if errorlevel 1 exit /b 1

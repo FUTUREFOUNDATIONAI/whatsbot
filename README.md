@@ -193,7 +193,14 @@ Na primeira abertura de **windows_start.bat**, escolha se o WhatsBot deve inicia
 automaticamente nas próximas vezes. A opção não cria um instalador nem um `.exe`:
 ela cria um atalho na pasta Inicializar do próprio usuário. Ao voltar de hibernação o processo
 costuma continuar normalmente; após desligar e ligar, ele é iniciado de novo no
-logon.
+logon, em segundo plano, sem deixar a janela do CMD aberta e sem abrir o navegador.
+Para acessar o painel, abra **http://127.0.0.1:8080**; para encerrar o WhatsBot,
+execute **windows_stop.bat**.
+
+Se você já ativou a inicialização automática em uma versão anterior, abra
+**windows_start.bat** uma vez após atualizar o WhatsBot. Isso atualiza o atalho
+existente para iniciar com a janela oculta nos próximos logons. Os comandos do
+PowerShell ficam embutidos na BAT e são gravados no atalho, sem arquivo adicional.
 
 ### Opção 2: macOS (direto)
 - **macOS** — dê dois cliques em **start.command** (na primeira vez ele baixa sozinho o que precisa)
