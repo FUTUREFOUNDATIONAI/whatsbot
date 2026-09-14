@@ -4,8 +4,17 @@ if "%1"=="--server" goto :server
 
 setlocal EnableDelayedExpansion
 
+:: Usado pela tarefa de inicializacao automatica do Windows. Faz todo o
+:: bootstrap normal, mas nao abre o navegador nem deixa uma janela visivel.
+set "AUTOSTART=0"
+if /I "%1"=="--autostart" set "AUTOSTART=1"
+
 :: Garantir que o diretorio de trabalho eh o mesmo do bat
 cd /d "%~dp0"
+
+:: Perguntar somente na primeira abertura manual. A escolha fica salva dentro
+:: de storages, que ja e a pasta de dados persistentes do WhatsBot.
+if "!AUTOSTART!"=="0" if not exist "storages\windows_autostart_choice.txt" call :ask_autostart
 
 :: Matar processos anteriores que podem estar pendurados
 taskkill /F /IM gowa.exe >nul 2>&1
@@ -198,6 +207,13 @@ pip install -q -r requirements.txt
 echo.
 echo [OK] Ambiente pronto!
 
+:: Quando iniciado pelo Agendador, rodar o servidor neste processo. Assim o
+:: WhatsBot volta no proximo logon sem abrir uma aba do navegador.
+if "!AUTOSTART!"=="1" (
+    endlocal
+    goto :server
+)
+
 endlocal
 
 :: Abrir browser apos 5s
@@ -216,3 +232,54 @@ set NO_COLOR=1
 :: em runtime, entao precisa existir antes (senao o uvicorn aborta).
 if not exist "storages\plugins" mkdir "storages\plugins"
 uvicorn server.dev:app --host 0.0.0.0 --port 8080 --reload --reload-dir server --reload-dir agent --reload-dir config --reload-dir gowa --reload-dir db --reload-dir plugins --reload-dir storages\plugins --log-level warning
+exit /b
+
+:: ===== CONFIGURACAO DA INICIALIZACAO AUTOMATICA =====
+:ask_autostart
+echo.
+echo ========================================
+echo   Iniciar WhatsBot automaticamente?
+echo ========================================
+echo.
+echo [1] Sim - iniciar ao entrar no Windows
+echo [2] Nao - iniciar somente quando eu abrir esta BAT
+echo.
+choice /C 12 /N /M "Escolha uma opcao"
+
+if errorlevel 2 (
+    if not exist "storages" mkdir "storages"
+    > "storages\windows_autostart_choice.txt" echo disabled
+    echo.
+    echo [OK] O WhatsBot sera iniciado somente quando esta BAT for aberta.
+    exit /b 0
+)
+
+call :install_autostart
+if errorlevel 1 (
+    echo.
+    echo [AVISO] Nao foi possivel ativar a inicializacao automatica.
+    echo          A pergunta sera exibida novamente na proxima abertura.
+    exit /b 0
+)
+
+if not exist "storages" mkdir "storages"
+> "storages\windows_autostart_choice.txt" echo enabled
+echo.
+echo [OK] Inicializacao automatica ativada.
+echo      Apos desligar e ligar, o WhatsBot inicia ao entrar no Windows.
+exit /b 0
+
+:install_autostart
+set "TASK_NAME=WhatsBot - Inicializacao Automatica"
+set "WHATSBOT_DIR=%~dp0"
+
+:: A tarefa e do usuario atual e nao exige permissao de administrador.
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$bat = Join-Path $env:WHATSBOT_DIR 'windows_start.bat'; " ^
+  "$action = New-ScheduledTaskAction -Execute $env:ComSpec -Argument ('/c ""{0}"" --autostart' -f $bat); " ^
+  "$trigger = New-ScheduledTaskTrigger -AtLogOn; " ^
+  "$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1); " ^
+  "Register-ScheduledTask -TaskName $env:TASK_NAME -Action $action -Trigger $trigger -Settings $settings -Description 'Inicia o WhatsBot automaticamente no logon e tenta recupera-lo se ele encerrar.' -Force | Out-Null"
+
+if errorlevel 1 exit /b 1
+exit /b 0

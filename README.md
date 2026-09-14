@@ -189,6 +189,12 @@ Em qualquer opção, **você não precisa criar conta de IA nem copiar chave** �
 - **Conexão com internet**
 - **WhatsApp ativo no celular** — para escanear o QR Code na primeira vez
 
+Na primeira abertura de **windows_start.bat**, escolha se o WhatsBot deve iniciar
+automaticamente nas próximas vezes. A opção não cria um instalador nem um `.exe`:
+ela registra uma tarefa do próprio Windows. Ao voltar de hibernação o processo
+costuma continuar normalmente; após desligar e ligar, ele é iniciado de novo no
+logon.
+
 ### Opção 2: macOS (direto)
 - **macOS** — dê dois cliques em **start.command** (na primeira vez ele baixa sozinho o que precisa)
 - **Conexão com internet**
