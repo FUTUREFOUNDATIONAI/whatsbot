@@ -280,7 +280,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$startup = [Environment]::GetFolderPath('Startup'); " ^
   "$shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $startup 'WhatsBot.lnk')); " ^
   "$shortcut.TargetPath = $env:ComSpec; " ^
-  "$shortcut.Arguments = ('/c ""{0}"" --autostart' -f $bat); " ^
+  "$shortcut.Arguments = ('/c ""{0}" --autostart"' -f $bat); " ^
   "$shortcut.WorkingDirectory = Split-Path $bat; " ^
   "$shortcut.WindowStyle = 7; " ^
   "$shortcut.Description = 'Inicia o WhatsBot automaticamente no logon.'; " ^
