@@ -270,16 +270,21 @@ echo      Apos desligar e ligar, o WhatsBot inicia ao entrar no Windows.
 exit /b 0
 
 :install_autostart
-set "TASK_NAME=WhatsBot - Inicializacao Automatica"
 set "WHATSBOT_DIR=%~dp0"
 
-:: A tarefa e do usuario atual e nao exige permissao de administrador.
+:: Um atalho na pasta Inicializar do usuario nao exige permissao de administrador
+:: (ao contrario de algumas configuracoes do Agendador de Tarefas).
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$ErrorActionPreference = 'Stop'; " ^
   "$bat = Join-Path $env:WHATSBOT_DIR 'windows_start.bat'; " ^
-  "$action = New-ScheduledTaskAction -Execute $env:ComSpec -Argument ('/c ""{0}"" --autostart' -f $bat); " ^
-  "$trigger = New-ScheduledTaskTrigger -AtLogOn; " ^
-  "$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1); " ^
-  "Register-ScheduledTask -TaskName $env:TASK_NAME -Action $action -Trigger $trigger -Settings $settings -Description 'Inicia o WhatsBot automaticamente no logon e tenta recupera-lo se ele encerrar.' -Force | Out-Null"
+  "$startup = [Environment]::GetFolderPath('Startup'); " ^
+  "$shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $startup 'WhatsBot.lnk')); " ^
+  "$shortcut.TargetPath = $env:ComSpec; " ^
+  "$shortcut.Arguments = ('/c ""{0}"" --autostart' -f $bat); " ^
+  "$shortcut.WorkingDirectory = Split-Path $bat; " ^
+  "$shortcut.WindowStyle = 7; " ^
+  "$shortcut.Description = 'Inicia o WhatsBot automaticamente no logon.'; " ^
+  "$shortcut.Save()"
 
 if errorlevel 1 exit /b 1
 exit /b 0

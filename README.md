@@ -191,7 +191,7 @@ Em qualquer opção, **você não precisa criar conta de IA nem copiar chave** �
 
 Na primeira abertura de **windows_start.bat**, escolha se o WhatsBot deve iniciar
 automaticamente nas próximas vezes. A opção não cria um instalador nem um `.exe`:
-ela registra uma tarefa do próprio Windows. Ao voltar de hibernação o processo
+ela cria um atalho na pasta Inicializar do próprio usuário. Ao voltar de hibernação o processo
 costuma continuar normalmente; após desligar e ligar, ele é iniciado de novo no
 logon.
 
