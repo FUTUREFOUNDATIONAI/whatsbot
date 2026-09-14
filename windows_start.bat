@@ -14,7 +14,19 @@ cd /d "%~dp0"
 
 :: Perguntar somente na primeira abertura manual. A escolha fica salva dentro
 :: de storages, que ja e a pasta de dados persistentes do WhatsBot.
-if "!AUTOSTART!"=="0" if not exist "storages\windows_autostart_choice.txt" call :ask_autostart
+:: Se ja estiver ativado, atualizar o atalho para corrigir versoes anteriores
+:: e acompanhar mudancas no caminho da pasta do WhatsBot.
+if "!AUTOSTART!"=="0" (
+    if not exist "storages\windows_autostart_choice.txt" (
+        call :ask_autostart
+    ) else (
+        findstr /X /C:"enabled" "storages\windows_autostart_choice.txt" >nul
+        if not errorlevel 1 (
+            call :install_autostart
+            if errorlevel 1 echo [AVISO] Nao foi possivel atualizar o atalho de inicializacao automatica.
+        )
+    )
+)
 
 :: Matar processos anteriores que podem estar pendurados
 taskkill /F /IM gowa.exe >nul 2>&1
@@ -274,13 +286,15 @@ set "WHATSBOT_DIR=%~dp0"
 
 :: Um atalho na pasta Inicializar do usuario nao exige permissao de administrador
 :: (ao contrario de algumas configuracoes do Agendador de Tarefas).
+:: Gerar as aspas com [char]34 evita que sejam consumidas entre CMD e PowerShell.
+:: O CMD recebe /d /s /c ""caminho do bat" --autostart".
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ErrorActionPreference = 'Stop'; " ^
   "$bat = Join-Path $env:WHATSBOT_DIR 'windows_start.bat'; " ^
   "$startup = [Environment]::GetFolderPath('Startup'); " ^
   "$shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $startup 'WhatsBot.lnk')); " ^
   "$shortcut.TargetPath = $env:ComSpec; " ^
-  "$shortcut.Arguments = ('/c ""{0}" --autostart"' -f $bat); " ^
+  "$shortcut.Arguments = ('/d /s /c {0}{0}{1}{0} --autostart{0}' -f [char]34, $bat); " ^
   "$shortcut.WorkingDirectory = Split-Path $bat; " ^
   "$shortcut.WindowStyle = 7; " ^
   "$shortcut.Description = 'Inicia o WhatsBot automaticamente no logon.'; " ^
