@@ -21,10 +21,12 @@ init_db(tmp / "whatsbot.db")
 from db.repositories import chat_repo  # noqa: E402
 from server.routes.chat import (  # noqa: E402
     _format_discovery_response,
+    _ensure_system_help_link,
     _is_plugin_intent,
     _safe_workspace_file,
     validate_workspace,
 )
+from agent.plugin_chat import system_help_prompt  # noqa: E402
 
 
 def _plugin_dir(plugin_id="demo_chat", migration_sql=None):
@@ -43,6 +45,21 @@ def _plugin_dir(plugin_id="demo_chat", migration_sql=None):
         (workspace / "migrations").mkdir(exist_ok=True)
         (workspace / "migrations" / "001_initial.sql").write_text(migration_sql, encoding="utf-8")
     return workspace
+
+
+def test_system_help_prompt_uses_current_panel_origin():
+    prompt = system_help_prompt("http://localhost:8080/")
+    assert "http://localhost:8080/painel#prompt" in prompt
+    assert "[Abrir instruções do agente](http://localhost:8080/painel#prompt)" in prompt
+    assert "https://" not in prompt
+
+
+def test_system_help_adds_specific_link_when_model_omits_it():
+    result = _ensure_system_help_link(
+        "Como altero as instruções do agente?", "Abra as configurações do painel.",
+        "http://localhost:8080",
+    )
+    assert result.endswith("[Abrir instruções do agente](http://localhost:8080/painel#prompt)")
 
 
 def test_chat_persistence():
@@ -353,6 +370,8 @@ def test_chat_api_and_streaming_without_external_services():
 
 def main():
     tests = [
+        test_system_help_prompt_uses_current_panel_origin,
+        test_system_help_adds_specific_link_when_model_omits_it,
         test_chat_persistence,
         test_project_order_and_soft_delete,
         test_validate_and_export_ready_workspace,

@@ -1,6 +1,10 @@
 {
-  "version": "0.2.2",
+  "version": "0.2.3",
   "changelog": [
+    {
+      "version": "0.2.3",
+      "description": "- Corrigido o erro 404 do Chat após atualizar no Docker, Linux ou Coolify: o WhatsBot agora reinicia automaticamente para carregar as novas rotas\n- Ajuda do sistema agora fornece links diretos usando o domínio ou localhost atual\n- Configurações do painel ganharam links com âncoras para abrir diretamente prompt, modelos, mídias, automação, senha, banco e atualizações"
+    },
     {
       "version": "0.2.2",
       "description": "- Chat integrado ao painel para ajuda do sistema e criação de plugins em linguagem simples\n- Projetos e conversas com renomear, apagar, reordenar, links individuais e exclusão lógica\n- Estimativa de tokens, cache e custo por resposta, com total acumulado no prompt\n- Gravação de áudio no chat com transcrição automática, cancelamento e envio pelo microfone\n- Melhorias de contraste, navegação, formatação das respostas e modelo padrão DeepSeek V4.1 Flash"

@@ -281,9 +281,10 @@ próxima seção), o self-update do WhatsBot em si ([server/routes/update.py](se
   resolve isso: sem o clique manual, o marcador nunca existe, então o popup nunca dispara.
 - **Preserva `storages/statics/logs/venv/.git/bin` e `.env`** — mesma lista de diretórios/arquivos
   protegidos contra sobrescrita usada pelo update do GOWA para `bin/`.
-- **Requer restart manual**: o `POST /api/update` só troca os arquivos em disco; o processo Python
-  em execução continua rodando o código antigo até reiniciar (ao contrário do GOWA, que já reinicia
-  o subprocess sozinho).
+- **Reinício automático**: depois de trocar os arquivos, `POST /api/update` chama
+  `plugins.restart.schedule_restart()`. Em Docker/Coolify o processo encerra após a resposta HTTP e
+  a política de restart do container o inicia novamente; em desenvolvimento o trigger do Uvicorn
+  recarrega o worker. Isso evita servir frontend novo com rotas Python antigas ainda em memória.
 - **`/release-up` é responsável por bumpar `WHATSBOT_VERSION`** antes de criar a tag — ver
   [.claude/commands/release-up.md](.claude/commands/release-up.md). Esquecer esse passo deixa o
   self-update reportando uma versão desatualizada mesmo depois de uma release nova.
@@ -459,7 +460,7 @@ Nomes não vêm do GOWA (`DisplayName` volta vazio): são resolvidos de contatos
 | GET | `/api/update/check` | Compara `WHATSBOT_VERSION` local com a última release no GitHub (`current_version`, `latest_version`, `update_available`, changelogs) |
 | GET | `/api/update/local-version` | Só lê `WHATSBOT_VERSION` local (sem chamar o GitHub) — usado pelo popup de novidades no boot do painel. Inclui `popup_shown` |
 | POST | `/api/update/popup-seen` | Marca `popup_shown: true` no `WHATSBOT_VERSION` em disco (por instalação, não por navegador) — chamado ao fechar o `WhatsNewModal` |
-| POST | `/api/update` | Baixa o `.zip` da **tag** da última release (não o `main`) e sobrescreve os arquivos, preservando `storages/statics/logs/venv/.git/bin` e `.env`. Requer restart manual pra aplicar |
+| POST | `/api/update` | Baixa o `.zip` da **tag** da última release (não o `main`), sobrescreve os arquivos preservando `storages/statics/logs/venv/.git/bin` e `.env`, e reinicia o processo automaticamente |
 | GET | `/api/gowa/version` | Versão do GOWA em uso, origem (`bundled`/`managed`/`env`), se há backup pra reverter |
 | GET | `/api/gowa/update/check?force=1` | Consulta a última release no GitHub (cache 1h) + se está na faixa homologada |
 | POST | `/api/gowa/update` | Baixa, verifica o SHA-256, troca o binário e reinicia. Body `{version?, force_unsupported?}`. 409 se já houver update rodando |

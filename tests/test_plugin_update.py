@@ -236,6 +236,53 @@ def test_reject_unsafe_zip_paths():
     raise AssertionError("deveria rejeitar caminho com '..'")
 
 
+def test_whatsbot_self_update_schedules_restart():
+    """A atualização do core precisa carregar as novas rotas sem ação manual."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+    import server.routes.update as update_routes
+
+    original_fetch = update_routes._fetch_latest_release
+    original_perform = update_routes._perform_update
+    original_restart = update_routes.schedule_restart
+    original_to_thread = asyncio.to_thread
+    restart_reasons = []
+    try:
+        async def inline_to_thread(function, *args, **kwargs):
+            return function(*args, **kwargs)
+
+        asyncio.to_thread = inline_to_thread
+        update_routes._fetch_latest_release = lambda: {
+            "tag": "v9.9.9", "version": "9.9.9", "description": "", "url": "",
+        }
+        update_routes._perform_update = lambda _root, _tag: {
+            "version": "9.9.9", "changelog": [], "files_updated": 12,
+            "message": "Atualizado para v9.9.9 — 12 arquivos atualizados.",
+        }
+        update_routes.schedule_restart = lambda reason="": restart_reasons.append(reason)
+
+        app = FastAPI()
+        deps = SimpleNamespace(settings=SimpleNamespace(data_dir=Path(_tmpdir)))
+        update_routes.register_routes(app, deps)
+        endpoint = next(
+            route.endpoint for route in app.routes
+            if getattr(route, "path", None) == "/api/update"
+            and "POST" in getattr(route, "methods", set())
+        )
+        response = asyncio.run(endpoint())
+        assert response["ok"] is True
+        assert response["data"]["restarting"] is True
+        assert "reiniciado automaticamente" in response["data"]["message"]
+        assert restart_reasons == ["WhatsBot updated to v9.9.9"]
+    finally:
+        update_routes._fetch_latest_release = original_fetch
+        update_routes._perform_update = original_perform
+        update_routes.schedule_restart = original_restart
+        asyncio.to_thread = original_to_thread
+
+
 def main() -> int:
     tests = [
         test_update_preserves_table_data,
@@ -247,6 +294,7 @@ def main() -> int:
         test_recover_promotes_staging_when_target_missing,
         test_recover_restores_backup_when_no_staging,
         test_recover_clears_leftovers_when_target_present,
+        test_whatsbot_self_update_schedules_restart,
     ]
     failures = 0
     for t in tests:

@@ -32,7 +32,7 @@ const SOURCE_LABELS = {
  * The auto-check toggle is owned by ConfigPanel so it rides along with the
  * single "Salvar Configurações" button; everything else is local state.
  */
-export function GowaSettings({ autoCheck, onAutoCheckChange, onNotify }) {
+export function GowaSettings({ id, autoCheck, onAutoCheckChange, onNotify }) {
   const [info, setInfo] = useState(null);
   const [checking, setChecking] = useState(false);
   const [working, setWorking] = useState(false);
@@ -127,7 +127,7 @@ export function GowaSettings({ autoCheck, onAutoCheckChange, onNotify }) {
   const indeterminate = working && phase !== 'downloading';
 
   return html`
-    <div class="bg-wa-bg rounded-xl p-5 border border-wa-border shadow-sm">
+    <div id=${id || undefined} class="bg-wa-bg rounded-xl p-5 border border-wa-border shadow-sm scroll-mt-4">
       <h3 class="text-xs font-semibold text-wa-secondary uppercase tracking-wider mb-4">
         GOWA (motor do WhatsApp)
       </h3>

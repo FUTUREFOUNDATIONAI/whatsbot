@@ -15,7 +15,7 @@ const STAGE_LABEL = {
   failed: 'Migração falhou',
 };
 
-export function DatabaseSettings({ onNotify }) {
+export function DatabaseSettings({ id, onNotify }) {
   const [info, setInfo] = useState(null);
   const [target, setTarget] = useState('');
   const [running, setRunning] = useState(false);
@@ -97,7 +97,7 @@ export function DatabaseSettings({ onNotify }) {
     : 0;
 
   return html`
-    <div class="bg-wa-bg rounded-xl p-5 border border-wa-border shadow-sm">
+    <div id=${id || undefined} class="bg-wa-bg rounded-xl p-5 border border-wa-border shadow-sm scroll-mt-4">
       <h3 class="text-xs font-semibold text-wa-secondary uppercase tracking-wider mb-4">
         Banco de dados
       </h3>

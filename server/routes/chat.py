@@ -49,6 +49,53 @@ _PLUGIN_INTENT_RE = re.compile(
 )
 
 
+def _public_base_url(request: Request) -> str:
+    """Build links using the host and port through which the user connected."""
+    headers = getattr(request, "headers", {}) or {}
+    request_url = getattr(request, "url", None)
+    forwarded_host = headers.get("x-forwarded-host", "").split(",", 1)[0].strip()
+    forwarded_proto = headers.get("x-forwarded-proto", "").split(",", 1)[0].strip()
+    host = forwarded_host or headers.get("host", "").strip() or getattr(request_url, "netloc", "localhost:8080")
+    scheme = forwarded_proto or getattr(request_url, "scheme", "http")
+    return f"{scheme}://{host}".rstrip("/")
+
+
+_HELP_LINK_RULES = (
+    (re.compile(r"prompt|instru(?:ç|c)ões? do agente|personalidade|comportamento da ia", re.I), "/painel#prompt", "instruções do agente"),
+    (re.compile(r"transcri(?:ç|c)[ãa]o?.*(?:document|pdf)|document.*transcri|ler documento", re.I), "/painel#document-transcription", "leitura de documentos"),
+    (re.compile(r"transcri(?:ç|c)[ãa]o?.*(?:[áa]udio|voz)|[áa]udio|microfone", re.I), "/painel#audio-transcription", "transcrição de áudio"),
+    (re.compile(r"imagem|foto", re.I), "/painel#image-transcription", "descrição de imagens"),
+    (re.compile(r"modelo|model", re.I), "/painel#model", "modelo de IA"),
+    (re.compile(r"chave|api", re.I), "/painel#api-key", "chave de API"),
+    (re.compile(r"grupo|grupos", re.I), "/painel#groups", "respostas em grupos"),
+    (re.compile(r"senha|password", re.I), "/painel#password", "senha do painel"),
+    (re.compile(r"banco|postgres|sqlite|dados", re.I), "/painel#database", "banco de dados"),
+    (re.compile(r"atualiza(?:r|ção)|vers[ãa]o nova", re.I), "/painel#update", "atualizações"),
+    (re.compile(r"custo|gasto|cr[ée]dito|quanto.*pago", re.I), "/costs", "custos de IA"),
+    (re.compile(r"execuç(?:ão|ões)|execucao|execucoes", re.I), "/executions", "execuções"),
+    (re.compile(r"ferramenta|tools", re.I), "/tools", "ferramentas"),
+    (re.compile(r"plugin|instal(?:ar|ação)", re.I), "/plugins", "plugins instalados"),
+    (re.compile(r"resposta autom[áa]tica|ativar a ia|agente responder", re.I), "/painel#automation", "respostas automáticas"),
+    (re.compile(r"contexto|hist[óo]rico", re.I), "/painel#context", "mensagens de contexto"),
+    (re.compile(r"agrupar|juntar mensagens", re.I), "/painel#batch", "agrupamento de mensagens"),
+    (re.compile(r"dividir|picad|separar mensagens", re.I), "/painel#split-messages", "divisão das respostas"),
+)
+
+
+def _ensure_system_help_link(user_content: str, assistant_text: str, base_url: str) -> str:
+    """Add the most specific known panel link if the model omitted it."""
+    if not assistant_text or not base_url:
+        return assistant_text
+    for pattern, path, label in _HELP_LINK_RULES:
+        if not pattern.search(user_content or ""):
+            continue
+        target = f"{base_url.rstrip('/')}{path}"
+        if target in assistant_text:
+            return assistant_text
+        return f"{assistant_text.rstrip()}\n\n[Abrir {label}]({target})"
+    return assistant_text
+
+
 def _is_plugin_intent(content: str) -> bool:
     return bool(_PLUGIN_INTENT_RE.search(content or ""))
 
@@ -674,9 +721,11 @@ def register_routes(app, deps):
 
                 rows = await asyncio.to_thread(chat_repo.list_messages, conversation_id)
                 if project["kind"] == "system" and _is_plugin_intent(content):
+                    chat_url = f"{_public_base_url(request)}/chat"
                     assistant_text = (
                         "Para criar ou alterar um plugin, clique no botão **+** no topo da barra lateral "
-                        "esquerda do Chat, crie um projeto e descreva ali, com suas palavras, o que você deseja."
+                        f"esquerda do Chat, ou [abra o Chat]({chat_url}), crie um projeto e descreva ali, "
+                        "com suas palavras, o que você deseja."
                     )
                     saved = await asyncio.to_thread(
                         chat_repo.add_message, conversation_id, "assistant", assistant_text,
@@ -715,6 +764,7 @@ def register_routes(app, deps):
                     api_key=api_key, model_id=model_id, reasoning=conv.get("reasoning") or "",
                     project_kind=agent_kind, workspace=_project_workspace(project),
                     project_root=deps.settings.data_dir,
+                    panel_base_url=_public_base_url(request),
                 )
                 _active_agents[run_id] = agent
                 assistant_text = ""
@@ -793,6 +843,10 @@ def register_routes(app, deps):
 
                 if project["kind"] == "plugin" and assistant_text.count("?") > 1:
                     assistant_text = _format_discovery_response(assistant_text)
+                if project["kind"] == "system":
+                    assistant_text = _ensure_system_help_link(
+                        content, assistant_text, _public_base_url(request),
+                    )
                 assistant_text = assistant_text.strip()
                 if not assistant_text:
                     assistant_text = "Execução concluída sem resposta textual."

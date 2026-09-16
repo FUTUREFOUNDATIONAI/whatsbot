@@ -9,6 +9,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+from plugins.restart import schedule_restart
 from server.helpers import _ok, _err
 
 logger = logging.getLogger(__name__)
@@ -213,7 +214,7 @@ def _perform_update(project_root: Path, tag: str) -> dict:
             "version": info["version"],
             "changelog": info["changelog"],
             "files_updated": copied,
-            "message": f"Atualizado para v{info['version']} — {copied} arquivos atualizados. Reinicie o servidor para aplicar.",
+            "message": f"Atualizado para v{info['version']} — {copied} arquivos atualizados.",
         }
 
 
@@ -266,4 +267,7 @@ def register_routes(app, deps):
         except Exception as exc:
             logger.exception("Unexpected error during update")
             return _err(f"Erro inesperado: {exc}", 500)
+        result["restarting"] = True
+        result["message"] += " O WhatsBot será reiniciado automaticamente para aplicar a atualização."
+        schedule_restart(reason=f"WhatsBot updated to v{result['version']}")
         return _ok(result)

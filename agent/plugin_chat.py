@@ -32,6 +32,52 @@ Você não cria, planeja, pesquisa nem altera plugins neste projeto. Se o usuár
 Nunca mencione endpoints, REST, JSON, IDs, banco de dados, classes ou detalhes de programação, salvo se o próprio usuário pedir uma explicação técnica.
 """
 
+
+def system_help_prompt(panel_base_url: str = "") -> str:
+    """Return the help prompt with links for the address the user is using.
+
+    The base URL comes from the current request, so a user accessing a local
+    installation receives ``localhost:port`` links while a hosted installation
+    receives its public domain. Keeping the link catalog in the system prompt
+    lets the model choose one precise destination without researching the UI.
+    """
+    base = (panel_base_url or "").rstrip("/")
+    links = f"""
+
+Links diretos do sistema (use apenas quando forem relevantes):
+- Painel principal: {base}/painel
+- Ativar respostas automáticas: {base}/painel#auto-reply
+- IA padrão para novos contatos: {base}/painel#default-ai
+- Respostas em grupos: {base}/painel#groups
+- Chave de API: {base}/painel#api-key
+- Modelo de IA do chat: {base}/painel#model
+- Modelo de melhoria: {base}/painel#improvement-model
+- Instruções do agente ou prompt: {base}/painel#prompt
+- Descrição de imagens: {base}/painel#image-transcription
+- Leitura de documentos: {base}/painel#document-transcription
+- Transcrição de áudio: {base}/painel#audio-transcription
+- Mensagens de contexto: {base}/painel#context
+- Agrupamento de mensagens: {base}/painel#batch
+- Divisão das respostas: {base}/painel#split-messages
+- Alerta de transferência para humano: {base}/painel#transfer-alert
+- Aviso de saldo baixo: {base}/painel#low-balance
+- Marcar conversas como lidas ou não lidas: {base}/painel#mark-conversations
+- Comportamento das respostas: {base}/painel#behavior
+- Senha do painel: {base}/painel#password
+- Limite de execuções salvas: {base}/painel#max-executions
+- Banco de dados: {base}/painel#database
+- Atualizações do WhatsBot: {base}/painel#update
+- Motor do WhatsApp (GOWA): {base}/painel#gowa
+- Custos de IA: {base}/costs
+- Execuções: {base}/executions
+- Ferramentas: {base}/tools
+- Plugins instalados: {base}/plugins
+- Chat e criação de plugin: {base}/chat
+
+Quando a pessoa perguntar como fazer algo, explique somente o necessário e inclua o link direto mais específico em Markdown, por exemplo: [Abrir instruções do agente]({base}/painel#prompt). Use o endereço acima exatamente como está; não invente caminhos, não use links para arquivos internos e não liste vários links sem necessidade. Se a pergunta envolver plugin, encaminhe para a página de Plugins ou para o Chat conforme o caso.
+"""
+    return SYSTEM_HELP_PROMPT.rstrip() + links
+
 PLUGIN_PROMPT = """Você é o Criador de Plugins do WhatsBot. Converse em português brasileiro com uma pessoa que não sabe programar.
 
 Antes de usar qualquer ferramenta ou escrever código, confirme que entendeu:
@@ -194,14 +240,14 @@ def build_model(api_key: str, model_id: str, reasoning: str = "") -> OpenAILike:
 
 def build_agent(
     *, api_key: str, model_id: str, reasoning: str, project_kind: str,
-    workspace: Path | None, project_root: Path,
+    workspace: Path | None, project_root: Path, panel_base_url: str = "",
 ) -> Agent:
     if project_kind == "discovery":
         tools: list = []
         system_message = DISCOVERY_PROMPT
     elif project_kind == "system":
         tools = reference_functions(project_root)
-        system_message = SYSTEM_HELP_PROMPT
+        system_message = system_help_prompt(panel_base_url)
     else:
         tools = reference_functions(project_root)
         system_message = PLUGIN_PROMPT
