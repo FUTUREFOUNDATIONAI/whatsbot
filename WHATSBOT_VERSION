@@ -1,6 +1,10 @@
 {
-  "version": "0.2.1",
+  "version": "0.2.2",
   "changelog": [
+    {
+      "version": "0.2.2",
+      "description": "- Chat integrado ao painel para ajuda do sistema e criação de plugins em linguagem simples\n- Projetos e conversas com renomear, apagar, reordenar, links individuais e exclusão lógica\n- Estimativa de tokens, cache e custo por resposta, com total acumulado no prompt\n- Gravação de áudio no chat com transcrição automática, cancelamento e envio pelo microfone\n- Melhorias de contraste, navegação, formatação das respostas e modelo padrão DeepSeek V4.1 Flash"
+    },
     {
       "version": "0.2.1",
       "description": "- Inicializacao automatica opcional no Windows por atalho do usuario, em segundo plano sem janela do CMD nem abertura do navegador\n- Corrigidas a criacao e a atualizacao do atalho de inicializacao, incluindo caminhos com espacos e execucao oculta\n- Modelo padrao de IA atualizado para deepseek/deepseek-v4.1-flash"
