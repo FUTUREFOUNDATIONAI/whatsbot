@@ -62,6 +62,8 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
   const [improveText, setImproveText] = useState('');
   const [improveLoading, setImproveLoading] = useState(false);
   const [improveError, setImproveError] = useState('');
+  // URL da foto atualmente aberta no visualizador em tela cheia.
+  const [imagePreviewUrl, setImagePreviewUrl] = useState(null);
   // Message being replied to (quoted) — drives the preview bar above the input.
   const [replyingTo, setReplyingTo] = useState(null);
   const chatRef = useRef(null);
@@ -118,7 +120,21 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
     setAiReplyInChat(true);
     setReplyingTo(null);
     setEmojiOpen(false);
+    setImagePreviewUrl(null);
   }, [phone]);
+
+  // Esc fecha somente o visualizador, sem tirar o usuário da conversa.
+  useEffect(() => {
+    if (!imagePreviewUrl) return;
+    function onKeyDown(e) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setImagePreviewUrl(null);
+      }
+    }
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [imagePreviewUrl]);
 
   // Insert an emoji at the caret position in the message input (keeps the
   // picker open for multiple picks, WhatsApp-style).
@@ -1055,7 +1071,10 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
                         alt="Imagem"
                         class="rounded-[4px] max-w-full max-h-[300px] mb-1 cursor-pointer"
                         style="min-width:120px"
-                        onClick=${() => window.open(m._isLocalBlob ? m.media_path : '/' + m.media_path, '_blank')}
+                        onClick=${(e) => {
+                          e.stopPropagation();
+                          setImagePreviewUrl(m._isLocalBlob ? m.media_path : '/' + m.media_path);
+                        }}
                         loading="lazy"
                       />
                       ${displayContent && displayContent !== '[Imagem enviada pelo contato]' && !displayContent.startsWith('[Descrição da imagem]')
@@ -1399,6 +1418,30 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
           `}
         </form>
       `}
+      ${imagePreviewUrl ? html`
+        <div
+          class="fixed inset-0 z-[140] bg-black/80 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Visualização da imagem"
+          onClick=${(e) => { if (e.target === e.currentTarget) setImagePreviewUrl(null); }}
+        >
+          <div class="relative max-w-full max-h-full flex items-center justify-center">
+            <button
+              type="button"
+              onClick=${() => setImagePreviewUrl(null)}
+              class="fixed top-4 right-4 w-[36px] h-[36px] rounded-full bg-black/55 text-white text-[28px] leading-none hover:bg-black/80 focus:outline-none focus:ring-2 focus:ring-white"
+              aria-label="Fechar visualização da imagem"
+              title="Fechar (Esc)"
+            >×</button>
+            <img
+              src=${imagePreviewUrl}
+              alt="Imagem ampliada"
+              class="max-w-[calc(100vw-2rem)] max-h-[calc(100vh-2rem)] object-contain rounded-[4px]"
+            />
+          </div>
+        </div>
+      ` : ''}
       ${msgMenu ? html`
         <${MessageContextMenu}
           x=${msgMenu.x}

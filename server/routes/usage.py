@@ -14,8 +14,8 @@ from server.routes.config import get_models_cache
 logger = logging.getLogger(__name__)
 
 
-def _get_model_pricing(model_id: str, api_key: str = "") -> tuple[float, float]:
-    """Return (prompt_price_per_token, completion_price_per_token) from cache."""
+def _get_model_pricing_details(model_id: str, api_key: str = "") -> dict:
+    """Return the provider's complete pricing object for a model."""
     _models_cache = get_models_cache()
     if not _models_cache["data"]:
         try:
@@ -38,11 +38,18 @@ def _get_model_pricing(model_id: str, api_key: str = "") -> tuple[float, float]:
             logger.info("Models cache populated for pricing (%d models)", len(models))
         except Exception as e:
             logger.warning("Failed to fetch models for pricing: %s", e)
-            return 0.0, 0.0
+            return {}
     for m in _models_cache["data"]:
         if m["id"] == model_id:
-            p = m.get("pricing", {})
-            return float(p.get("prompt", "0") or "0"), float(p.get("completion", "0") or "0")
+            return dict(m.get("pricing", {}))
+    return {}
+
+
+def _get_model_pricing(model_id: str, api_key: str = "") -> tuple[float, float]:
+    """Return (prompt_price_per_token, completion_price_per_token) from cache."""
+    p = _get_model_pricing_details(model_id, api_key)
+    if p:
+        return float(p.get("prompt", "0") or "0"), float(p.get("completion", "0") or "0")
     return 0.0, 0.0
 
 

@@ -1,0 +1,1028 @@
+"""Built-in Chat: WhatsBot help and persistent plugin development projects."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import html as html_lib
+import io
+import importlib.util
+import inspect
+import json
+import logging
+import os
+import re
+import runpy
+import shutil
+import subprocess
+import sys
+import time
+import tempfile
+import uuid
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+from fastapi import File, Request, UploadFile
+from fastapi.responses import StreamingResponse
+
+from agent.plugin_chat import build_agent, history_messages, metrics_dict
+from db.repositories import chat_repo, plugin_repo
+from plugins.manifest import load_manifest
+from plugins.dep_check import undeclared_dependencies
+from plugins.migrator import _validate_sql_prefix, run_pending_migrations
+from plugins.restart import schedule_restart
+from server.helpers import _err, _ok
+from server.routes.usage import _get_model_pricing_details
+
+logger = logging.getLogger(__name__)
+
+_PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_MAX_MESSAGE_CHARS = 50_000
+_MAX_AUDIO_BYTES = 25 * 1024 * 1024
+_AUTO_COMPACT_CHARS = 60_000
+_active_agents: dict[str, object] = {}
+_PLUGIN_INTENT_RE = re.compile(
+    r"(?:\b(?:criar|fazer|montar|desenvolver|alterar|editar|atualizar|modificar)\b.{0,100}\bplugin\b)"
+    r"|(?:\bplugin\b.{0,100}\b(?:criar|fazer|montar|desenvolver|alterar|editar|atualizar|modificar)\b)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _is_plugin_intent(content: str) -> bool:
+    return bool(_PLUGIN_INTENT_RE.search(content or ""))
+
+
+def _format_discovery_response(content: str) -> str:
+    """Keep end-user discovery questions readable even if a model flattens them."""
+    text = html_lib.unescape(str(content or "")).strip()
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    if text.count("?") > 1:
+        text = re.sub(r"\?\s+(?=\S)", "?\n\n", text)
+    return text
+
+
+def _number(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _current_model_pricing(pricing: dict, now: datetime | None = None) -> dict:
+    """Apply an OpenRouter-compatible time-of-day pricing override."""
+    selected = dict(pricing or {})
+    instant = now or datetime.now(timezone.utc)
+    weekday = instant.strftime("%A").lower()
+    hhmm = instant.hour * 100 + instant.minute
+    for override in pricing.get("overrides", []) if isinstance(pricing, dict) else []:
+        days = [str(day).lower() for day in override.get("utc_days", [])]
+        if days and weekday not in days:
+            continue
+        start = int(override.get("utc_start", 0) or 0)
+        end = int(override.get("utc_end", 0) or 0)
+        if start == end:
+            in_window = True
+        elif end == 0:
+            in_window = hhmm >= start
+        elif start < end:
+            in_window = start <= hhmm < end
+        else:
+            in_window = hhmm >= start or hhmm < end
+        if in_window:
+            selected.update(override)
+            break
+    return selected
+
+
+def _add_cost_estimate(
+    metrics: dict, model_id: str, pricing: dict, at: datetime | None = None,
+) -> dict:
+    """Add a price snapshot and estimated USD cost to one model run."""
+    result = dict(metrics or {})
+    if not pricing:
+        result.update({"model": model_id, "cost_estimate_unavailable": True})
+        return result
+    active = _current_model_pricing(pricing, at)
+    prompt_price = _number(active.get("prompt"))
+    completion_price = _number(active.get("completion"))
+    cache_read_price = _number(active.get("input_cache_read")) or prompt_price
+    cache_write_price = _number(active.get("input_cache_write")) or prompt_price
+    input_tokens = int(result.get("input_tokens", 0) or 0)
+    output_tokens = int(result.get("output_tokens", 0) or 0)
+    cache_read_tokens = int(result.get("cache_read_tokens", 0) or 0)
+    cache_write_tokens = int(result.get("cache_write_tokens", 0) or 0)
+    regular_input_tokens = max(input_tokens - cache_read_tokens - cache_write_tokens, 0)
+    cost = (
+        regular_input_tokens * prompt_price
+        + cache_read_tokens * cache_read_price
+        + cache_write_tokens * cache_write_price
+        + output_tokens * completion_price
+    )
+    result.update({
+        "model": model_id,
+        "estimated_cost_usd": cost,
+        "cost_is_estimate": True,
+        "pricing": {
+            "prompt": prompt_price,
+            "completion": completion_price,
+            "input_cache_read": cache_read_price,
+            "input_cache_write": cache_write_price,
+        },
+    })
+    return result
+
+
+def _add_conversation_cost_totals(messages: list[dict], model_id: str, pricing: dict) -> list[dict]:
+    """Enrich legacy metric rows and add a running conversation total."""
+    total = 0.0
+    enriched = []
+    for message in messages:
+        item = dict(message)
+        if item.get("kind") == "metrics":
+            metadata = dict(item.get("metadata") or {})
+            if "estimated_cost_usd" not in metadata:
+                created_at = item.get("created_at")
+                at = datetime.fromtimestamp(created_at, timezone.utc) if created_at else None
+                metadata = _add_cost_estimate(
+                    metadata, metadata.get("model") or model_id, pricing, at,
+                )
+            total += _number(metadata.get("estimated_cost_usd"))
+            metadata["conversation_estimated_cost_usd"] = total
+            item["metadata"] = metadata
+        enriched.append(item)
+    return enriched
+
+
+async def _with_timeout(iterator, seconds: int = 600):
+    """Yield an async run stream with a hard wall-clock limit."""
+    async with asyncio.timeout(seconds):
+        async for item in iterator:
+            yield item
+
+
+def _slug(value: str) -> str:
+    import unicodedata
+
+    value = unicodedata.normalize("NFKD", value or "").encode("ascii", "ignore").decode().lower()
+    value = re.sub(r"[^a-z0-9]+", "_", value).strip("_")
+    if not value or not value[0].isalpha():
+        value = "plugin_" + value
+    return value[:32].rstrip("_") or "meu_plugin"
+
+
+def _ndjson(event: str, data=None) -> bytes:
+    return (json.dumps({"event": event, "data": data or {}}, ensure_ascii=False, default=str) + "\n").encode("utf-8")
+
+
+def _project_workspace(project: dict) -> Path | None:
+    raw = project.get("workspace_path") or ""
+    return Path(raw).resolve() if raw else None
+
+
+def _safe_workspace_file(project: dict, relative: str) -> Path:
+    root = _project_workspace(project)
+    if root is None:
+        raise ValueError("este projeto não possui arquivos")
+    target = (root / (relative or "")).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("caminho fora do projeto") from exc
+    return target
+
+
+def _zip_workspace(workspace: Path, destination: Path | None = None) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(workspace.rglob("*")):
+            if not path.is_file() or any(part in {"__pycache__", ".pytest_cache", ".git"} for part in path.parts):
+                continue
+            if path.suffix == ".pyc":
+                continue
+            archive.write(path, path.relative_to(workspace).as_posix())
+    payload = buffer.getvalue()
+    if destination is not None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+    return payload
+
+
+def _run_simple_tests(workspace: Path, tests: list[Path]) -> tuple[int, str]:
+    """Small zero-dependency runner for plain ``test_*`` functions.
+
+    It keeps testing available in an existing installation that has not yet
+    installed the newly declared pytest dependency. Full pytest remains the
+    preferred runner whenever it is available.
+    """
+    stdout, stderr = io.StringIO(), io.StringIO()
+    failures = 0
+    previous_cwd = Path.cwd()
+    inserted = False
+    try:
+        os.chdir(workspace)
+        if str(workspace) not in sys.path:
+            sys.path.insert(0, str(workspace))
+            inserted = True
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            for test_file in tests:
+                try:
+                    namespace = runpy.run_path(str(test_file), run_name=f"plugin_test_{test_file.stem}")
+                    found = 0
+                    for name, function in namespace.items():
+                        if not name.startswith("test_") or not callable(function):
+                            continue
+                        found += 1
+                        if inspect.signature(function).parameters:
+                            raise RuntimeError(f"{test_file.name}:{name} requer fixtures; instale pytest")
+                        function()
+                        print(f"PASS {test_file.name}:{name}")
+                    if not found:
+                        print(f"SKIP {test_file.name}: nenhuma função test_* sem framework")
+                except Exception as exc:
+                    failures += 1
+                    print(f"FAIL {test_file.name}: {type(exc).__name__}: {exc}")
+    finally:
+        if inserted and str(workspace) in sys.path:
+            sys.path.remove(str(workspace))
+        os.chdir(previous_cwd)
+    return failures, (stdout.getvalue() + stderr.getvalue())[-6000:]
+
+
+def validate_workspace(project: dict, *, save_version: bool = True) -> dict:
+    workspace = _project_workspace(project)
+    if project.get("kind") != "plugin" or workspace is None:
+        raise ValueError("o projeto de ajuda do WhatsBot não é instalável")
+    if not workspace.is_dir():
+        raise ValueError("pasta do projeto não encontrada")
+
+    manifest = load_manifest(workspace)
+    expected_id = project.get("plugin_id")
+    if expected_id and manifest.id != expected_id:
+        raise ValueError(f"o manifest usa id '{manifest.id}', mas o projeto pertence a '{expected_id}'")
+
+    for dependency in manifest.dependencies:
+        if (
+            len(dependency) > 200 or dependency.startswith("-")
+            or not re.fullmatch(r"[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?(?:[<>=!~].+)?", dependency)
+        ):
+            raise ValueError(f"dependência inválida ou insegura no manifest: {dependency!r}")
+    undeclared = undeclared_dependencies(workspace, manifest.dependencies)
+    if undeclared:
+        details = ", ".join(f"{module} → {package}" for module, package in undeclared)
+        raise ValueError(f"imports de terceiros não declarados em dependencies: {details}")
+
+    checked_migrations = []
+    if manifest.migrations:
+        migration_dir = workspace / manifest.migrations
+        if not migration_dir.is_dir():
+            raise ValueError(f"pasta de migrations ausente: {manifest.migrations}")
+        for sql_path in sorted(migration_dir.glob("*.sql")):
+            sql = sql_path.read_text(encoding="utf-8")
+            _validate_sql_prefix(sql, manifest.id, f"plugin_{manifest.id}_", sql_path.name)
+            # Creator updates are deliberately additive so restoring the old
+            # code remains possible after a failed upgrade.
+            if re.search(r"\b(?:DROP\s+(?:TABLE|COLUMN|INDEX)|TRUNCATE\b|ALTER\s+TABLE.+\bRENAME\b)", sql, re.I | re.S):
+                raise ValueError(f"{sql_path.name}: atualização destrutiva não permitida; use migration compatível e aditiva")
+            checked_migrations.append(sql_path.name)
+
+    # Compile source directly so syntax validation also works in PyInstaller
+    # builds, where ``sys.executable -m compileall`` would relaunch WhatsBot.
+    for source in workspace.rglob("*.py"):
+        if "__pycache__" in source.parts:
+            continue
+        try:
+            compile(source.read_text(encoding="utf-8"), str(source), "exec")
+        except (SyntaxError, UnicodeError) as exc:
+            raise ValueError(f"falha de sintaxe em {source.relative_to(workspace)}: {exc}") from exc
+
+    tests = list(workspace.rglob("test_*.py"))
+    test_output = "Nenhum teste automatizado encontrado."
+    if tests:
+        pytest_available = importlib.util.find_spec("pytest") is not None
+        if getattr(sys, "frozen", False) and pytest_available:
+            # The packaged executable already embeds Python. Run the bundled
+            # pytest in-process instead of requiring Python/WSL/Git Bash.
+            import pytest
+            stdout, stderr = io.StringIO(), io.StringIO()
+            previous_cwd = Path.cwd()
+            try:
+                os.chdir(workspace)
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    return_code = pytest.main(["-q", str(workspace)])
+            finally:
+                os.chdir(previous_cwd)
+            test_output = (stdout.getvalue() + stderr.getvalue())[-6000:]
+            if return_code:
+                raise ValueError("testes falharam:\n" + test_output)
+        elif pytest_available:
+            result = subprocess.run(
+                [sys.executable, "-m", "pytest", "-q"], cwd=str(workspace),
+                capture_output=True, text=True, timeout=180,
+            )
+            test_output = ((result.stdout or "") + ("\n" + result.stderr if result.stderr else ""))[-6000:]
+            if result.returncode:
+                raise ValueError("testes falharam:\n" + test_output)
+        else:
+            failures, test_output = _run_simple_tests(workspace, tests)
+            if failures:
+                raise ValueError("testes falharam:\n" + test_output)
+
+    zip_path = None
+    if save_version:
+        creator_root = workspace.parent.parent
+        version_dir = creator_root / "versions"
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        zip_path = version_dir / f"{manifest.id}-{manifest.version}-{stamp}.zip"
+        _zip_workspace(workspace, zip_path)
+
+    return {
+        "valid": True,
+        "plugin_id": manifest.id,
+        "name": manifest.name,
+        "version": manifest.version,
+        "dependencies": manifest.dependencies,
+        "dependencies_checked": True,
+        "migrations": checked_migrations,
+        "tests": len(tests),
+        "test_output": test_output,
+        "zip_path": str(zip_path) if zip_path else None,
+        "installed": plugin_repo.get(manifest.id) is not None,
+    }
+
+
+async def _compact(conversation: dict, settings, *, automatic: bool = False) -> dict:
+    rows = chat_repo.list_messages(conversation["id"])
+    previous_through = conversation.get("compacted_through_id")
+    message_rows = [
+        r for r in rows
+        if r["kind"] == "message" and r["role"] in ("user", "assistant")
+        and (previous_through is None or r["id"] > previous_through)
+    ]
+    if len(message_rows) < 6:
+        return {"compacted": False, "reason": "A conversa ainda é curta."}
+    # Keep up to the latest four exchanges verbatim. Original rows are never
+    # deleted, so users can still inspect the full transcript after compaction.
+    keep = 8 if len(message_rows) > 8 else 4
+    old = message_rows[:-keep]
+    if not old:
+        return {"compacted": False, "reason": "Não há histórico antigo para compactar."}
+    transcript = "\n\n".join(f"{r['role'].upper()}: {r['content']}" for r in old)
+    previous = conversation.get("summary") or ""
+    prompt = (
+        "Atualize o resumo técnico desta conversa. Preserve requisitos, decisões, arquivos, "
+        "mudanças feitas, testes, erros ainda relevantes e próximos passos. Não invente.\n\n"
+        f"RESUMO ANTERIOR:\n{previous or '(nenhum)'}\n\nHISTÓRICO:\n{transcript[:180000]}"
+    )
+    model_id = conversation.get("model") or settings.get("model", "deepseek/deepseek-v4.1-flash")
+    agent = build_agent(
+        api_key=settings.get("openrouter_api_key", ""), model_id=model_id,
+        reasoning=conversation.get("reasoning") or "", project_kind="system",
+        workspace=None, project_root=settings.data_dir,
+    )
+    output = await asyncio.wait_for(agent.arun(prompt, stream=False), timeout=180)
+    summary = str(getattr(output, "content", "") or "").strip()
+    if not summary:
+        raise RuntimeError("o modelo não retornou um resumo")
+    through = old[-1]["id"]
+    chat_repo.update_conversation(conversation["id"], summary=summary, compacted_through_id=through)
+    return {"compacted": True, "automatic": automatic, "through_id": through, "summary": summary}
+
+
+def _tool_payload(event) -> dict:
+    tool = getattr(event, "tool", None)
+    if tool is None:
+        return {}
+    return {
+        "tool_call_id": str(
+            getattr(tool, "tool_call_id", None)
+            or getattr(event, "tool_call_id", None)
+            or ""
+        ),
+        "name": getattr(tool, "tool_name", None) or "ferramenta",
+        "args": getattr(tool, "tool_args", None) or {},
+        "result": getattr(tool, "result", None),
+        "error": bool(getattr(tool, "tool_call_error", False)),
+    }
+
+
+def _shared_project_context(project_id: str, current_conversation_id: str) -> str:
+    """Carry essential decisions between separate conversations in a project."""
+    parts: list[str] = []
+    for conversation in chat_repo.list_conversations(project_id):
+        if conversation["id"] == current_conversation_id:
+            continue
+        summary = (conversation.get("summary") or "").strip()
+        if summary:
+            parts.append(f"Conversa “{conversation['title']}”:\n{summary}")
+            continue
+        rows = [
+            row for row in chat_repo.list_messages(conversation["id"])
+            if row["kind"] == "message" and row["role"] in ("user", "assistant")
+        ][-4:]
+        if rows:
+            excerpt = "\n".join(f"{row['role']}: {row['content'][:1200]}" for row in rows)
+            parts.append(f"Trecho recente de “{conversation['title']}”:\n{excerpt}")
+    if not parts:
+        return ""
+    return "Contexto essencial compartilhado por outras conversas deste projeto:\n\n" + "\n\n".join(parts[-6:])
+
+
+def register_routes(app, deps):
+    creator_root = deps.settings.data_dir / "storages" / "plugin_creator"
+    projects_root = creator_root / "projects"
+    projects_root.mkdir(parents=True, exist_ok=True)
+    chat_repo.ensure_system_project()
+
+    @app.get("/api/chat")
+    async def bootstrap():
+        projects = await asyncio.to_thread(chat_repo.list_projects)
+        installed = await asyncio.to_thread(plugin_repo.list_all)
+        for project in projects:
+            project["conversations"] = await asyncio.to_thread(chat_repo.list_conversations, project["id"])
+        return _ok({
+            "projects": projects,
+            "installed_plugins": installed,
+            "default_model": deps.settings.get("model", "deepseek/deepseek-v4.1-flash"),
+        })
+
+    @app.post("/api/chat/projects")
+    async def create_project(body: dict):
+        source_id = (body.get("plugin_id") or "").strip()
+        name = (body.get("name") or source_id or "Novo plugin").strip()[:100]
+        plugin_id = source_id or _slug(name)
+        if not _PLUGIN_ID_RE.match(plugin_id):
+            return _err("id de plugin inválido; use letras minúsculas, números e underscore")
+        existing_project = await asyncio.to_thread(chat_repo.get_project_by_plugin, plugin_id)
+        if existing_project:
+            return _ok(existing_project)
+        deleted_project = await asyncio.to_thread(
+            chat_repo.get_project_by_plugin, plugin_id, include_deleted=True,
+        )
+        if deleted_project and deleted_project.get("deleted_at") is not None:
+            await asyncio.to_thread(
+                chat_repo.update_project, deleted_project["id"], deleted_at=None, name=name,
+            )
+            return _ok(await asyncio.to_thread(chat_repo.get_project, deleted_project["id"]))
+
+        project_id = uuid.uuid4().hex
+        workspace = projects_root / project_id / "workspace" / plugin_id
+        installed_dir = deps.plugins_dir / plugin_id
+        try:
+            workspace.parent.mkdir(parents=True, exist_ok=True)
+            if installed_dir.is_dir():
+                shutil.copytree(installed_dir, workspace)
+                try:
+                    name = load_manifest(installed_dir).name
+                except Exception:
+                    pass
+            else:
+                workspace.mkdir(parents=True)
+        except Exception as exc:
+            return _err(f"não foi possível criar a pasta do projeto: {exc}")
+
+        # Repository accepts generated IDs; persist this project with its
+        # already-created workspace, then rename the root if IDs differ.
+        project = await asyncio.to_thread(chat_repo.create_project, name, "plugin", plugin_id, str(workspace))
+        generated_root = projects_root / project["id"]
+        desired_root = projects_root / project_id
+        if generated_root != desired_root and desired_root.exists():
+            final_root = generated_root / "workspace" / plugin_id
+            final_root.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(workspace), str(final_root))
+            shutil.rmtree(desired_root, ignore_errors=True)
+            workspace = final_root
+            await asyncio.to_thread(chat_repo.update_project, project["id"], workspace_path=str(workspace))
+            project["workspace_path"] = str(workspace)
+        return _ok(project)
+
+    @app.put("/api/chat/projects/{project_id}")
+    async def update_project(project_id: str, body: dict):
+        project = await asyncio.to_thread(chat_repo.get_project, project_id)
+        if not project or project.get("deleted_at") is not None:
+            return _err("projeto não encontrado", 404)
+        name = (body.get("name") or "").strip()
+        if not name:
+            return _err("informe um nome para o projeto")
+        await asyncio.to_thread(chat_repo.update_project, project_id, name=name[:100])
+        return _ok(await asyncio.to_thread(chat_repo.get_project, project_id))
+
+    @app.post("/api/chat/projects/reorder")
+    async def reorder_projects(body: dict):
+        project_ids = body.get("project_ids")
+        if not isinstance(project_ids, list) or not all(isinstance(item, str) for item in project_ids):
+            return _err("ordem de projetos inválida")
+        active = await asyncio.to_thread(chat_repo.list_projects)
+        active_ids = [project["id"] for project in active]
+        if len(project_ids) != len(set(project_ids)) or set(project_ids) != set(active_ids):
+            return _err("a ordem deve conter todos os projetos ativos uma única vez")
+        await asyncio.to_thread(chat_repo.reorder_projects, project_ids)
+        return _ok({"project_ids": project_ids})
+
+    @app.delete("/api/chat/projects/{project_id}")
+    async def delete_project(project_id: str):
+        project = await asyncio.to_thread(chat_repo.get_project, project_id)
+        if not project or project.get("deleted_at") is not None:
+            return _err("projeto não encontrado", 404)
+        if project.get("kind") == "system":
+            return _err("o projeto de ajuda do WhatsBot não pode ser apagado")
+        await asyncio.to_thread(chat_repo.soft_delete_project, project_id)
+        return _ok({
+            "project_id": project_id,
+            "soft_deleted": True,
+            "plugin_preserved": True,
+            "workspace_preserved": True,
+        })
+
+    @app.post("/api/chat/projects/{project_id}/conversations")
+    async def create_conversation(project_id: str, body: dict):
+        project = await asyncio.to_thread(chat_repo.get_project, project_id)
+        if not project:
+            return _err("projeto não encontrado", 404)
+        existing = await asyncio.to_thread(chat_repo.list_conversations, project_id)
+        inherited = existing[0] if existing else {}
+        model = (
+            body.get("model") or inherited.get("model")
+            or deps.settings.get("model", "deepseek/deepseek-v4.1-flash")
+        ).strip()
+        reasoning = (
+            body.get("reasoning") if "reasoning" in body else inherited.get("reasoning", "")
+        ) or ""
+        reasoning = reasoning.strip()
+        if reasoning not in ("", "low", "medium", "high"):
+            return _err("nível de reasoning inválido")
+        conv = await asyncio.to_thread(chat_repo.create_conversation, project_id, model, reasoning)
+        return _ok(conv)
+
+    @app.get("/api/chat/conversations/{conversation_id}")
+    async def get_conversation(conversation_id: str):
+        conv = await asyncio.to_thread(chat_repo.get_conversation, conversation_id)
+        if not conv:
+            return _err("conversa não encontrada", 404)
+        project = await asyncio.to_thread(chat_repo.get_project, conv["project_id"])
+        messages = await asyncio.to_thread(chat_repo.list_messages, conversation_id)
+        pricing = await asyncio.to_thread(
+            _get_model_pricing_details, conv.get("model") or "",
+            deps.settings.get("openrouter_api_key", ""),
+        )
+        messages = _add_conversation_cost_totals(messages, conv.get("model") or "", pricing)
+        return _ok({"conversation": conv, "project": project, "messages": messages})
+
+    @app.put("/api/chat/conversations/{conversation_id}")
+    async def update_conversation(conversation_id: str, body: dict):
+        if not await asyncio.to_thread(chat_repo.get_conversation, conversation_id):
+            return _err("conversa não encontrada", 404)
+        values = {}
+        for key in ("model", "reasoning", "title"):
+            if key in body and isinstance(body[key], str):
+                values[key] = body[key].strip()[:200]
+        if values.get("reasoning", "") not in ("", "low", "medium", "high"):
+            return _err("nível de reasoning inválido")
+        if values:
+            await asyncio.to_thread(chat_repo.update_conversation, conversation_id, **values)
+        return _ok(await asyncio.to_thread(chat_repo.get_conversation, conversation_id))
+
+    @app.delete("/api/chat/conversations/{conversation_id}")
+    async def delete_conversation(conversation_id: str):
+        conversation = await asyncio.to_thread(chat_repo.get_conversation, conversation_id)
+        if not conversation:
+            return _err("conversa não encontrada", 404)
+        await asyncio.to_thread(chat_repo.delete_conversation, conversation_id)
+        return _ok({"conversation_id": conversation_id, "deleted": True})
+
+    @app.post("/api/chat/conversations/{conversation_id}/transcribe-audio")
+    async def transcribe_chat_audio(
+        conversation_id: str,
+        audio: UploadFile = File(...),
+    ):
+        """Transcribe a temporary voice note with the configured WhatsBot audio model."""
+        if not await asyncio.to_thread(chat_repo.get_conversation, conversation_id):
+            return _err("conversa não encontrada", 404)
+        if not deps.settings.get("openrouter_api_key", ""):
+            return _err("configure a chave de API no Painel antes de usar o áudio")
+        content = await audio.read(_MAX_AUDIO_BYTES + 1)
+        if not content:
+            return _err("o áudio gravado está vazio")
+        if len(content) > _MAX_AUDIO_BYTES:
+            return _err("áudio grande demais (limite de 25 MB)")
+        suffix = Path(audio.filename or "voice.ogg").suffix.lower()
+        if suffix not in {".ogg", ".oga", ".opus", ".mp3", ".wav"}:
+            suffix = ".ogg"
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix="whatsbot-chat-", suffix=suffix, delete=False) as temporary:
+                temporary.write(content)
+                temporary_path = Path(temporary.name)
+            transcription = await asyncio.to_thread(
+                deps.agent_handler.transcribe_audio, str(temporary_path), "",
+            )
+            transcription = (transcription or "").strip()
+            if not transcription:
+                return _err("não foi possível transcrever o áudio", 502)
+            return _ok({"transcription": transcription})
+        finally:
+            if temporary_path:
+                temporary_path.unlink(missing_ok=True)
+
+    @app.post("/api/chat/conversations/{conversation_id}/compact")
+    async def compact_conversation(conversation_id: str):
+        conv = await asyncio.to_thread(chat_repo.get_conversation, conversation_id)
+        if not conv:
+            return _err("conversa não encontrada", 404)
+        if not deps.settings.get("openrouter_api_key", ""):
+            return _err("configure a chave de API antes de compactar")
+        try:
+            result = await _compact(conv, deps.settings)
+            return _ok(result)
+        except Exception as exc:
+            logger.exception("chat compaction failed")
+            return _err(f"falha ao compactar: {exc}", 502)
+
+    @app.post("/api/chat/conversations/{conversation_id}/messages")
+    async def send_message(conversation_id: str, body: dict, request: Request):
+        conv = await asyncio.to_thread(chat_repo.get_conversation, conversation_id)
+        if not conv:
+            return _err("conversa não encontrada", 404)
+        project = await asyncio.to_thread(chat_repo.get_project, conv["project_id"])
+        content = (body.get("content") or "").strip()
+        if not content:
+            return _err("mensagem vazia")
+        if len(content) > _MAX_MESSAGE_CHARS:
+            return _err(f"mensagem grande demais (limite {_MAX_MESSAGE_CHARS} caracteres)")
+        api_key = deps.settings.get("openrouter_api_key", "")
+        if not api_key and not (project["kind"] == "system" and _is_plugin_intent(content)):
+            return _err("configure a chave de API no Painel antes de usar o Chat")
+
+        async def stream():
+            run_id = uuid.uuid4().hex
+            yield _ndjson("run_started", {"run_id": run_id})
+            try:
+                if content == "/compact":
+                    result = await _compact(conv, deps.settings)
+                    text = "Contexto compactado com sucesso." if result.get("compacted") else result.get("reason", "Nada para compactar.")
+                    saved = await asyncio.to_thread(chat_repo.add_message, conversation_id, "assistant", text)
+                    yield _ndjson("message", saved)
+                    yield _ndjson("run_completed", {"run_id": run_id, "compaction": result})
+                    return
+
+                user_row = await asyncio.to_thread(chat_repo.add_message, conversation_id, "user", content)
+                if conv.get("title") == "Nova conversa":
+                    title = content.replace("\n", " ")[:70]
+                    await asyncio.to_thread(chat_repo.update_conversation, conversation_id, title=title)
+                    yield _ndjson("conversation_updated", {"title": title})
+
+                rows = await asyncio.to_thread(chat_repo.list_messages, conversation_id)
+                if project["kind"] == "system" and _is_plugin_intent(content):
+                    assistant_text = (
+                        "Para criar ou alterar um plugin, clique no botão **+** no topo da barra lateral "
+                        "esquerda do Chat, crie um projeto e descreva ali, com suas palavras, o que você deseja."
+                    )
+                    saved = await asyncio.to_thread(
+                        chat_repo.add_message, conversation_id, "assistant", assistant_text,
+                    )
+                    yield _ndjson("message_saved", saved)
+                    yield _ndjson("run_completed", {"run_id": run_id, "redirected_to_plugin_project": True})
+                    return
+
+                active_rows = [r for r in rows if not conv.get("compacted_through_id") or r["id"] > conv["compacted_through_id"]]
+                if sum(len(r.get("content") or "") for r in active_rows) > _AUTO_COMPACT_CHARS and len(active_rows) > 12:
+                    yield _ndjson("status", {"label": "Compactando contexto"})
+                    result = await _compact(conv, deps.settings, automatic=True)
+                    if result.get("compacted"):
+                        conv.update(summary=result["summary"], compacted_through_id=result["through_id"])
+                        yield _ndjson("compacted", result)
+                        rows = await asyncio.to_thread(chat_repo.list_messages, conversation_id)
+
+                after = conv.get("compacted_through_id")
+                context_rows = [r for r in rows if after is None or r["id"] > after]
+                shared_context = await asyncio.to_thread(
+                    _shared_project_context, project["id"], conversation_id,
+                )
+                summary_context = "\n\n".join(
+                    value for value in (shared_context, conv.get("summary") or "") if value
+                )
+                model_id = conv.get("model") or deps.settings.get("model", "deepseek/deepseek-v4.1-flash")
+                user_message_count = sum(
+                    1 for row in rows if row.get("kind") == "message" and row.get("role") == "user"
+                )
+                agent_kind = (
+                    "discovery"
+                    if project["kind"] == "plugin" and user_message_count == 1 and len(content) < 800
+                    else project["kind"]
+                )
+                agent = build_agent(
+                    api_key=api_key, model_id=model_id, reasoning=conv.get("reasoning") or "",
+                    project_kind=agent_kind, workspace=_project_workspace(project),
+                    project_root=deps.settings.data_dir,
+                )
+                _active_agents[run_id] = agent
+                assistant_text = ""
+                final_metrics = {}
+                active_action_messages: dict[str, int] = {}
+                yield _ndjson("status", {"label": "Analisando"})
+                prompt_messages = history_messages(summary_context, context_rows)
+                if agent_kind == "discovery":
+                    output = await asyncio.wait_for(
+                        agent.arun(
+                            input=prompt_messages, stream=False, run_id=run_id,
+                            session_id=conversation_id,
+                        ),
+                        timeout=180,
+                    )
+                    assistant_text = _format_discovery_response(getattr(output, "content", ""))
+                    final_metrics = metrics_dict(getattr(output, "metrics", None))
+                    if assistant_text:
+                        yield _ndjson("content", {"delta": assistant_text})
+                else:
+                    events = agent.arun(
+                        input=prompt_messages,
+                        stream=True, stream_events=True, run_id=run_id, session_id=conversation_id,
+                    )
+                    async for event in _with_timeout(events):
+                        event_name = getattr(event, "event", "")
+                        if await request.is_disconnected():
+                            await agent.acancel_run(run_id)
+                            return
+                        if event_name == "RunContent":
+                            delta = getattr(event, "content", None)
+                            if delta:
+                                assistant_text += str(delta)
+                                yield _ndjson("content", {"delta": str(delta)})
+                        elif event_name == "ToolCallStarted":
+                            payload = _tool_payload(event)
+                            saved = await asyncio.to_thread(
+                                chat_repo.add_message, conversation_id, "assistant",
+                                payload.get("name", "Ação"), kind="action", metadata={"status": "running", **payload},
+                            )
+                            action_key = payload.get("tool_call_id") or json.dumps(
+                                [payload.get("name"), payload.get("args")], sort_keys=True, default=str,
+                            )
+                            active_action_messages[action_key] = saved["id"]
+                            yield _ndjson("action_started", saved)
+                        elif event_name in ("ToolCallCompleted", "ToolCallError"):
+                            payload = _tool_payload(event)
+                            action_key = payload.get("tool_call_id") or json.dumps(
+                                [payload.get("name"), payload.get("args")], sort_keys=True, default=str,
+                            )
+                            action_content = str(payload.get("result") or getattr(event, "error", "") or "Concluído")
+                            action_metadata = {
+                                "status": "failed" if event_name.endswith("Error") else "completed", **payload,
+                            }
+                            message_id = active_action_messages.pop(action_key, None)
+                            if message_id:
+                                saved = await asyncio.to_thread(
+                                    chat_repo.update_message, message_id,
+                                    content=action_content, metadata=action_metadata,
+                                )
+                            else:
+                                saved = await asyncio.to_thread(
+                                    chat_repo.add_message, conversation_id, "assistant", action_content,
+                                    kind="action", metadata=action_metadata,
+                                )
+                            yield _ndjson("action_completed", saved)
+                        elif event_name in ("RunCompleted", "RunContentCompleted"):
+                            maybe_metrics = metrics_dict(getattr(event, "metrics", None))
+                            if any(maybe_metrics.values()):
+                                final_metrics = maybe_metrics
+                        elif event_name == "RunError":
+                            raise RuntimeError(str(getattr(event, "content", None) or "erro na execução do agente"))
+                        elif event_name == "RunCancelled":
+                            yield _ndjson("run_cancelled", {"run_id": run_id})
+                            return
+
+                if project["kind"] == "plugin" and assistant_text.count("?") > 1:
+                    assistant_text = _format_discovery_response(assistant_text)
+                assistant_text = assistant_text.strip()
+                if not assistant_text:
+                    assistant_text = "Execução concluída sem resposta textual."
+                saved = await asyncio.to_thread(chat_repo.add_message, conversation_id, "assistant", assistant_text)
+                yield _ndjson("message_saved", saved)
+
+                validation = None
+                if project["kind"] == "plugin" and (_project_workspace(project) / "plugin.yaml").is_file():
+                    yield _ndjson("status", {"label": "Validando plugin"})
+                    try:
+                        validation = await asyncio.to_thread(validate_workspace, project)
+                        yield _ndjson("install_ready", validation)
+                    except Exception as exc:
+                        yield _ndjson("validation_failed", {"error": str(exc)})
+                if final_metrics:
+                    pricing = await asyncio.to_thread(
+                        _get_model_pricing_details, model_id, api_key,
+                    )
+                    final_metrics = _add_cost_estimate(final_metrics, model_id, pricing)
+                    previous_messages = await asyncio.to_thread(chat_repo.list_messages, conversation_id)
+                    previous_messages = _add_conversation_cost_totals(
+                        previous_messages, model_id, pricing,
+                    )
+                    final_metrics["conversation_estimated_cost_usd"] = sum(
+                        _number((row.get("metadata") or {}).get("estimated_cost_usd"))
+                        for row in previous_messages if row.get("kind") == "metrics"
+                    ) + _number(final_metrics.get("estimated_cost_usd"))
+                    metric_row = await asyncio.to_thread(
+                        chat_repo.add_message, conversation_id, "assistant", "",
+                        kind="metrics", metadata=final_metrics,
+                    )
+                    yield _ndjson("metrics", metric_row)
+                yield _ndjson("run_completed", {"run_id": run_id, "metrics": final_metrics, "validation": validation})
+            except asyncio.CancelledError:
+                yield _ndjson("run_cancelled", {"run_id": run_id})
+            except Exception as exc:
+                logger.exception("plugin chat run failed")
+                await asyncio.to_thread(chat_repo.add_message, conversation_id, "assistant", f"Falha: {exc}", kind="system")
+                yield _ndjson("run_failed", {"run_id": run_id, "error": str(exc)})
+            finally:
+                _active_agents.pop(run_id, None)
+
+        return StreamingResponse(stream(), media_type="application/x-ndjson", headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/chat/runs/{run_id}/cancel")
+    async def cancel_run(run_id: str):
+        agent = _active_agents.get(run_id)
+        if not agent:
+            return _ok({"cancelled": False})
+        cancelled = await agent.acancel_run(run_id)
+        return _ok({"cancelled": bool(cancelled)})
+
+    @app.get("/api/chat/projects/{project_id}/files")
+    async def list_project_files(project_id: str):
+        project = await asyncio.to_thread(chat_repo.get_project, project_id)
+        if not project:
+            return _err("projeto não encontrado", 404)
+        root = _project_workspace(project)
+        files = [] if root is None else [
+            p.relative_to(root).as_posix() for p in sorted(root.rglob("*"))
+            if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"
+        ]
+        return _ok({"files": files})
+
+    @app.get("/api/chat/projects/{project_id}/file")
+    async def read_project_file(project_id: str, path: str):
+        project = await asyncio.to_thread(chat_repo.get_project, project_id)
+        if not project:
+            return _err("projeto não encontrado", 404)
+        try:
+            target = _safe_workspace_file(project, path)
+            if not target.is_file() or target.stat().st_size > 2_000_000:
+                return _err("arquivo não encontrado ou grande demais", 404)
+            return _ok({"path": path, "content": target.read_text(encoding="utf-8", errors="replace")})
+        except ValueError as exc:
+            return _err(str(exc))
+
+    @app.post("/api/chat/projects/{project_id}/validate")
+    async def validate_project(project_id: str):
+        project = await asyncio.to_thread(chat_repo.get_project, project_id)
+        if not project:
+            return _err("projeto não encontrado", 404)
+        try:
+            return _ok(await asyncio.to_thread(validate_workspace, project))
+        except Exception as exc:
+            return _err(str(exc))
+
+    @app.get("/api/chat/projects/{project_id}/export")
+    async def export_project(project_id: str):
+        project = await asyncio.to_thread(chat_repo.get_project, project_id)
+        if not project:
+            return _err("projeto não encontrado", 404)
+        try:
+            validation = await asyncio.to_thread(validate_workspace, project, save_version=False)
+            workspace = _project_workspace(project)
+            payload = await asyncio.to_thread(_zip_workspace, workspace)
+            return StreamingResponse(
+                io.BytesIO(payload), media_type="application/zip",
+                headers={"Content-Disposition": f'attachment; filename="{validation["plugin_id"]}-{validation["version"]}-plugin.zip"'},
+            )
+        except Exception as exc:
+            return _err(str(exc))
+
+    @app.post("/api/chat/projects/{project_id}/install")
+    async def install_project(project_id: str, body: dict):
+        project = await asyncio.to_thread(chat_repo.get_project, project_id)
+        if not project:
+            return _err("projeto não encontrado", 404)
+        try:
+            validation = await asyncio.to_thread(validate_workspace, project)
+        except Exception as exc:
+            return _err(f"plugin não passou na validação: {exc}")
+
+        workspace = _project_workspace(project)
+        plugin_id = validation["plugin_id"]
+        target = deps.plugins_dir / plugin_id
+        backup_root = creator_root / "backups" / plugin_id
+        backup = backup_root / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+        staging = deps.plugins_dir / f".{plugin_id}.chat-staging"
+
+        def _install():
+            shutil.rmtree(staging, ignore_errors=True)
+            shutil.copytree(workspace, staging)
+            existed = target.is_dir()
+            old_row = plugin_repo.get(plugin_id)
+            if existed:
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(target, backup)
+                # Keep conventional user-owned folders if the generated update
+                # does not contain them. DB rows and plugin settings live outside
+                # the code folder and are preserved independently.
+                for name in ("data", "uploads", "media", "storage", ".data"):
+                    source = target / name
+                    destination = staging / name
+                    if source.exists() and not destination.exists():
+                        shutil.copytree(source, destination) if source.is_dir() else shutil.copy2(source, destination)
+            replaced = deps.plugins_dir / f".{plugin_id}.chat-replaced"
+            shutil.rmtree(replaced, ignore_errors=True)
+            try:
+                if existed:
+                    os.replace(target, replaced)
+                os.replace(staging, target)
+                plugin_repo.upsert(plugin_id, validation["version"], enabled=True)
+                run_pending_migrations(load_manifest(target), target)
+            except Exception:
+                if target.exists():
+                    shutil.rmtree(target, ignore_errors=True)
+                if replaced.exists():
+                    os.replace(replaced, target)
+                if old_row:
+                    plugin_repo.upsert(plugin_id, old_row["version"], enabled=bool(old_row["enabled"]))
+                else:
+                    plugin_repo.delete(plugin_id)
+                raise
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+            shutil.rmtree(replaced, ignore_errors=True)
+            return existed
+
+        try:
+            updated = await asyncio.to_thread(_install)
+        except Exception as exc:
+            logger.exception("chat plugin installation failed")
+            return _err(f"instalação revertida após falha: {exc}")
+        result_message = "Plugin atualizado com sucesso." if updated else "Plugin instalado com sucesso."
+        conversation_id = (body or {}).get("conversation_id")
+        if conversation_id:
+            conversation = await asyncio.to_thread(chat_repo.get_conversation, conversation_id)
+            if conversation and conversation["project_id"] == project_id:
+                await asyncio.to_thread(
+                    chat_repo.add_message, conversation_id, "assistant",
+                    result_message + " O WhatsBot será reiniciado para carregar a nova versão.",
+                )
+        schedule_restart(reason=f"plugin {plugin_id} {'updated' if updated else 'installed'} from Chat")
+        return _ok({
+            "plugin_id": plugin_id, "version": validation["version"],
+            "updated": updated, "restarting": True,
+            "message": result_message,
+        })
+
+    @app.post("/api/chat/projects/{project_id}/rollback")
+    async def rollback_project(project_id: str):
+        project = await asyncio.to_thread(chat_repo.get_project, project_id)
+        if not project or project.get("kind") != "plugin":
+            return _err("projeto de plugin não encontrado", 404)
+        plugin_id = project["plugin_id"]
+        backup_root = creator_root / "backups" / plugin_id
+        backups = sorted((p for p in backup_root.iterdir() if p.is_dir()), reverse=True) if backup_root.is_dir() else []
+        if not backups:
+            return _err("nenhum backup disponível")
+        target = deps.plugins_dir / plugin_id
+        failed = deps.plugins_dir / f".{plugin_id}.failed-{int(time.time())}"
+        try:
+            if target.exists():
+                os.replace(target, failed)
+            shutil.copytree(backups[0], target)
+            manifest = load_manifest(target)
+            plugin_repo.upsert(plugin_id, manifest.version)
+            schedule_restart(reason=f"plugin {plugin_id} rolled back from Chat")
+            return _ok({"plugin_id": plugin_id, "version": manifest.version, "restarting": True})
+        except Exception as exc:
+            if not target.exists() and failed.exists():
+                os.replace(failed, target)
+            return _err(f"falha ao restaurar backup: {exc}")
+
+    @app.post("/api/chat/cache-test")
+    async def cache_test(body: dict):
+        model_id = (body.get("model") or deps.settings.get("model", "")).strip()
+        reasoning = (body.get("reasoning") or "").strip()
+        api_key = deps.settings.get("openrouter_api_key", "")
+        if not api_key:
+            return _err("chave de API não configurada")
+        stable = ("Teste de cache do WhatsBot. Responda apenas OK. " * 180)[:9000]
+        results = []
+        try:
+            for _ in range(2):
+                agent = build_agent(
+                    api_key=api_key, model_id=model_id, reasoning=reasoning,
+                    project_kind="system", workspace=None, project_root=deps.settings.data_dir,
+                )
+                output = await asyncio.wait_for(
+                    agent.arun(stable, stream=False, session_id="whatsbot-cache-test"),
+                    timeout=180,
+                )
+                results.append(metrics_dict(getattr(output, "metrics", None)))
+            hit = any(r.get("cache_read_tokens", 0) > 0 for r in results)
+            return _ok({
+                "supported": hit, "calls": results,
+                "status": "Cache comprovado por tokens reutilizados." if hit else "Cache não comprovado: nenhuma reutilização foi informada pela API.",
+                "critical": not hit,
+            })
+        except Exception as exc:
+            return _err(f"teste de cache falhou: {exc}", 502)

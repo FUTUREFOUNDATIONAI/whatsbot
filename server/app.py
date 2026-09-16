@@ -15,7 +15,7 @@ from server.auth import auth_required, verify_token
 from server.helpers import _get_web_dir
 from server.state import MemoryLogHandler, ConnectionManager, AppState
 from server.background import start_gowa_task, status_poll_loop, qr_poll_loop, avatar_fetch_task, gowa_update_check_loop
-from server.routes import logs, sandbox, config, whatsapp, websocket, usage, contacts, webhook, auth, tags, executions, update, setup as setup_routes, plugins as plugins_routes, tools as tools_routes, admin as admin_routes, ai_engine as ai_engine_routes, gowa_update as gowa_update_routes
+from server.routes import logs, sandbox, config, whatsapp, websocket, usage, contacts, webhook, auth, tags, executions, update, setup as setup_routes, plugins as plugins_routes, tools as tools_routes, admin as admin_routes, ai_engine as ai_engine_routes, gowa_update as gowa_update_routes, chat as chat_routes
 from db.repositories import tool_override_repo
 from agent import group_mentions, agent_factory
 from agent import ai_tool_installer
@@ -236,7 +236,7 @@ def create_app(
         if s.get("path", "").startswith("/")
     }
     _SPA_PATHS = (
-        {"/", "/painel", "/sandbox", "/costs", "/executions", "/plugins", "/tools", "/wizard"}
+        {"/", "/painel", "/sandbox", "/costs", "/executions", "/plugins", "/tools", "/chat", "/wizard"}
         | _PLUGIN_SPA_PATHS
     )
 
@@ -245,7 +245,7 @@ def create_app(
         path = request.url.path
 
         # SPA pages, static assets, webhook, and auth endpoints are always open
-        if path in _SPA_PATHS or path.startswith(("/contacts/", "/executions/")):
+        if path in _SPA_PATHS or path.startswith(("/contacts/", "/executions/", "/chat/")):
             return await call_next(request)
         if path in _AUTH_EXEMPT_EXACT:
             return await call_next(request)
@@ -301,10 +301,18 @@ def create_app(
     @app.get("/executions")
     @app.get("/plugins")
     @app.get("/tools")
+    @app.get("/chat")
+    @app.get("/chat/projects/{project_id}")
+    @app.get("/chat/projects/{project_id}/conversations/{conversation_id}")
+    @app.get("/chat/projects/{project_id}/conversations/{conversation_id}/messages/{message_id:int}")
     @app.get("/wizard")
     @app.get("/contacts/{contact_id:int}")
     @app.get("/executions/{execution_id:int}")
-    async def index(contact_id: int | None = None, execution_id: int | None = None):
+    async def index(
+        contact_id: int | None = None, execution_id: int | None = None,
+        project_id: str | None = None, conversation_id: str | None = None,
+        message_id: int | None = None,
+    ):
         index_file = web_dir / "index.html"
         if index_file.exists():
             return FileResponse(str(index_file))
@@ -342,6 +350,7 @@ def create_app(
     admin_routes.register_routes(app, deps)
     ai_engine_routes.register_routes(app, deps)
     gowa_update_routes.register_routes(app, deps)
+    chat_routes.register_routes(app, deps)
 
     # ── Plugin routers and static assets ──────────────────────────────
     for loaded in registry.loaded.values():

@@ -130,7 +130,9 @@ def _version_key(version: str) -> tuple[int, ...]:
     return tuple(parts) or (0,)
 
 
-def _swap_plugin_dir(zf: zipfile.ZipFile, plugins_dir: Path, pid: str) -> None:
+def _swap_plugin_dir(
+    zf: zipfile.ZipFile, plugins_dir: Path, pid: str, *, keep_backup: bool = False,
+) -> Path | None:
     """Replace ``plugins_dir/pid`` with the zip's contents, atomically-ish.
 
     Extracts into a dot-prefixed staging dir (ignored by the loader), then renames
@@ -159,6 +161,18 @@ def _swap_plugin_dir(zf: zipfile.ZipFile, plugins_dir: Path, pid: str) -> None:
         shutil.rmtree(staging, ignore_errors=True)
         raise ValueError(f"falha ao extrair zip: {e}")
 
+    # Backward compatibility for plugins that stored user-owned files inside
+    # their code folder before ``plugins.context.plugin_data_dir`` existed.
+    # New plugins should use that external durable directory instead.
+    for name in ("data", "uploads", "media", "storage", ".data"):
+        source = target / name
+        destination = staging / name
+        if source.exists() and not destination.exists():
+            if source.is_dir():
+                shutil.copytree(source, destination)
+            else:
+                shutil.copy2(source, destination)
+
     os.replace(target, backup)          # current code aside (same fs → atomic)
     try:
         os.replace(staging, target)     # new code into place
@@ -166,7 +180,10 @@ def _swap_plugin_dir(zf: zipfile.ZipFile, plugins_dir: Path, pid: str) -> None:
         os.replace(backup, target)      # restore original on failure
         shutil.rmtree(staging, ignore_errors=True)
         raise
+    if keep_backup:
+        return backup
     shutil.rmtree(backup, ignore_errors=True)
+    return None
 
 
 def register_routes(app, deps):
@@ -439,23 +456,27 @@ def register_routes(app, deps):
         downgrade = _version_key(new_version) < _version_key(old_version)
 
         def _do_update() -> None:
-            _swap_plugin_dir(zf, plugins_dir, plugin_id)
-            # Preserve ``enabled`` (enabled=None) — an update keeps the plugin's
-            # current on/off state; only the version + updated_at change.
-            plugin_repo.upsert(plugin_id, new_version)
-            # Keep schema in lockstep with the bumped version (review finding #2).
-            # The boot loader only migrates ENABLED plugins, so a DISABLED plugin
-            # that already has a schema would report v_new while its tables stay at
-            # v_old until re-enabled. Apply the new pending migrations now for any
-            # plugin that already has applied migrations (i.e. real data exists);
-            # idempotent with the boot run. Never pre-creates tables for a plugin
-            # that was never enabled (no applied migrations → skip).
-            if plugin_repo.applied_migrations(plugin_id):
-                try:
+            backup = _swap_plugin_dir(zf, plugins_dir, plugin_id, keep_backup=True)
+            try:
+                # Preserve ``enabled`` (enabled=None) — an update keeps the plugin's
+                # current on/off state; only the version + updated_at change.
+                plugin_repo.upsert(plugin_id, new_version)
+                # Disabled plugins that already own data are migrated here too.
+                if plugin_repo.applied_migrations(plugin_id):
                     run_pending_migrations(load_manifest(target), target)
-                except Exception as e:  # noqa: BLE001 — surface, don't fail the swap
-                    plugin_repo.set_load_error(
-                        plugin_id, f"migração no update falhou: {e}")
+            except Exception:
+                # Schema migrations are transactional; restore the previous code
+                # and DB metadata before surfacing the failure.
+                shutil.rmtree(target, ignore_errors=True)
+                if backup and backup.exists():
+                    os.replace(backup, target)
+                plugin_repo.upsert(
+                    plugin_id, old_version,
+                    enabled=bool((existing or {}).get("enabled")),
+                )
+                raise
+            if backup:
+                shutil.rmtree(backup, ignore_errors=True)
 
         try:
             await asyncio.to_thread(_do_update)

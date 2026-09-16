@@ -349,8 +349,9 @@ class AgentHandler:
             if self.pricing_fn:
                 prompt_price, completion_price = self.pricing_fn(model)
                 cost_usd = (prompt_tokens * prompt_price) + (completion_tokens * completion_price)
-            contact = self._get_contact(phone)
-            contact.add_usage(call_type, model, prompt_tokens, completion_tokens, total_tokens, cost_usd)
+            if phone:
+                contact = self._get_contact(phone)
+                contact.add_usage(call_type, model, prompt_tokens, completion_tokens, total_tokens, cost_usd)
             logger.debug("Usage recorded for %s: %s %s tokens=%d cost=%.6f",
                          phone, call_type, model, total_tokens, cost_usd)
         except Exception as e:

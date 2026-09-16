@@ -213,6 +213,61 @@ Index("idx_tool_overrides_plugin", tool_overrides.c.plugin_id)
 
 
 # --------------------------------------------------------------------------- #
+# Built-in Chat / plugin creator
+# --------------------------------------------------------------------------- #
+
+chat_projects = Table(
+    "chat_projects",
+    metadata,
+    Column("id", Text, primary_key=True),
+    # ``system`` is the built-in WhatsBot help project; ``plugin`` owns a
+    # durable development workspace.  plugin_id stays stable across updates.
+    Column("kind", Text, nullable=False, server_default="plugin"),
+    Column("plugin_id", Text),
+    Column("name", Text, nullable=False),
+    Column("workspace_path", Text, nullable=False, server_default=""),
+    Column("sort_order", Integer, nullable=False, server_default="0"),
+    # Soft deletion hides only the Chat project. Its workspace and any
+    # installed plugin remain untouched and can be restored later.
+    Column("deleted_at", Float),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+)
+Index("idx_chat_projects_updated", chat_projects.c.updated_at)
+
+
+chat_conversations = Table(
+    "chat_conversations",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("chat_projects.id", ondelete="CASCADE"), nullable=False),
+    Column("title", Text, nullable=False, server_default="Nova conversa"),
+    Column("model", Text, nullable=False, server_default=""),
+    Column("reasoning", Text, nullable=False, server_default=""),
+    Column("summary", Text, nullable=False, server_default=""),
+    Column("compacted_through_id", Integer),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+)
+Index("idx_chat_conversations_project", chat_conversations.c.project_id, chat_conversations.c.updated_at)
+
+
+chat_messages = Table(
+    "chat_messages",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("conversation_id", Text, ForeignKey("chat_conversations.id", ondelete="CASCADE"), nullable=False),
+    Column("role", Text, nullable=False),
+    Column("content", Text, nullable=False, server_default=""),
+    # message | action | system.  Action metadata holds the real tool event.
+    Column("kind", Text, nullable=False, server_default="message"),
+    Column("metadata", Text, nullable=False, server_default="{}"),
+    Column("created_at", Float, nullable=False),
+)
+Index("idx_chat_messages_conversation", chat_messages.c.conversation_id, chat_messages.c.id)
+
+
+# --------------------------------------------------------------------------- #
 # AI engine — config-in-DB + code-in-DB (prefix ``ai_``)
 # --------------------------------------------------------------------------- #
 # These tables move the agent's prompt/model/tools out of code and into the DB,

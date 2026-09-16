@@ -101,6 +101,8 @@ def test_update_preserves_table_data():
     }, body="# v1\n")
     plugin_repo.upsert(pid, "1.0.0")
     assert run_pending_migrations(load_manifest(v1), v1) == [1]
+    (v1 / "uploads").mkdir()
+    (v1 / "uploads" / "user-file.txt").write_text("keep-file", encoding="utf-8")
     with eng.begin() as conn:
         conn.execute(sa_text(f"INSERT INTO {tbl} (name) VALUES ('keep-me')"))
 
@@ -128,6 +130,7 @@ def test_update_preserves_table_data():
         assert rows == [("keep-me", None)], "linha preservada + coluna nova"
         assert plugin_repo.get(pid)["version"] == "2.0.0"
         assert "# v2" in (plugins_dir / pid / "__init__.py").read_text(encoding="utf-8")
+        assert (plugins_dir / pid / "uploads" / "user-file.txt").read_text() == "keep-file"
     finally:
         plugin_repo.drop_plugin_tables(pid)
         plugin_repo.delete(pid)
@@ -143,6 +146,36 @@ def test_version_key_orders_and_flags_downgrade():
 def test_version_key_strips_v_prefix():
     assert _version_key("v2.0.0") == _version_key("2.0.0")
     assert _version_key("V2.0.0") > _version_key("v1.9.0")
+
+
+def test_migration_batch_rolls_back_bookkeeping_on_failure():
+    """A later bad migration cannot mark earlier files in the batch as applied."""
+    pid = "demotxn"
+    tbl = f"plugin_{pid}_items"
+    work = Path(tempfile.mkdtemp(prefix="upd_txn_"))
+    plugin = _write_plugin(work, pid, "1.0.0", {
+        "001_init.sql": f"CREATE TABLE {tbl} (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);",
+    })
+    plugin_repo.upsert(pid, "1.0.0")
+    assert run_pending_migrations(load_manifest(plugin), plugin) == [1]
+    (plugin / "migrations" / "002_insert.sql").write_text(
+        f"INSERT INTO {tbl} (name) VALUES ('must-rollback');", encoding="utf-8",
+    )
+    (plugin / "migrations" / "003_broken.sql").write_text(
+        f"INSERT INTO plugin_{pid}_missing (name) VALUES ('boom');", encoding="utf-8",
+    )
+    try:
+        run_pending_migrations(load_manifest(plugin), plugin)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("broken migration should fail")
+    assert plugin_repo.applied_migrations(pid) == {1}
+    with get_engine().connect() as conn:
+        count = conn.execute(sa_text(f"SELECT COUNT(*) FROM {tbl}")).scalar_one()
+    assert count == 0
+    plugin_repo.drop_plugin_tables(pid)
+    plugin_repo.delete(pid)
 
 
 def _put_dir(parent: Path, name: str, marker_value: str) -> Path:
@@ -208,6 +241,7 @@ def main() -> int:
         test_update_preserves_table_data,
         test_version_key_orders_and_flags_downgrade,
         test_version_key_strips_v_prefix,
+        test_migration_batch_rolls_back_bookkeeping_on_failure,
         test_read_zip_manifest_extracts_id,
         test_reject_unsafe_zip_paths,
         test_recover_promotes_staging_when_target_missing,

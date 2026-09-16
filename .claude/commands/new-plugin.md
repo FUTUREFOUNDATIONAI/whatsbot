@@ -101,7 +101,7 @@ import logging
 import time
 
 from sqlalchemy import text
-from plugins.context import broadcast, make_plugin_db
+from plugins.context import broadcast, make_plugin_db, plugin_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +133,10 @@ def execute_my_tool(ctx, args: dict) -> str | None:
 
 CORE_TOOLS = [(MY_TOOL, execute_my_tool)]
 ```
+
+Arquivos persistentes do usuário (uploads, imagens e documentos gerados) devem
+ficar em `plugin_data_dir("<id>")`. Essa pasta vive em
+`storages/plugin_data/<id>/` e não é substituída durante atualizações do código.
 
 **Banco de dados (importante)**: o WhatsBot agora roda em cima de SQLAlchemy
 Core (SQLite default, Postgres opcional via tela Settings → Banco). Plugin

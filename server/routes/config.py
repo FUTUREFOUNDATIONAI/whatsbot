@@ -181,6 +181,8 @@ def register_routes(app, deps):
                     "name": m.get("name", ""),
                     "input_modalities": arch.get("input_modalities", ["text"]),
                     "pricing": m.get("pricing", {}),
+                    "context_length": m.get("context_length"),
+                    "supported_parameters": m.get("supported_parameters", []),
                 })
             models.sort(key=lambda x: x["name"].lower())
             _models_cache["data"] = models

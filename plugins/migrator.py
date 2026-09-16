@@ -25,12 +25,15 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from pathlib import Path
 
+from sqlalchemy import insert as sa_insert
 from sqlalchemy import text as sa_text
 
 from db.engine import get_engine
 from db.repositories import plugin_repo
+from db.tables import plugin_migrations
 
 from plugins.manifest import PluginManifest
 
@@ -74,21 +77,27 @@ def run_pending_migrations(manifest: PluginManifest, plugin_dir: Path) -> list[i
     applied_now: list[int] = []
     engine = get_engine()
     dialect = engine.dialect.name
-    for version, path in pending:
-        sql = path.read_text(encoding="utf-8")
-        _validate_sql_prefix(sql, pid, table_prefix, path.name)
-        try:
-            with engine.begin() as conn:
+    # Apply the complete pending set in one transaction. If migration N+1
+    # fails, schema changes and bookkeeping from migration N are rolled back
+    # together. This is essential for safe plugin updates.
+    try:
+        with engine.begin() as conn:
+            for version, path in pending:
+                sql = path.read_text(encoding="utf-8")
+                _validate_sql_prefix(sql, pid, table_prefix, path.name)
                 for stmt in _split_statements(sql):
                     if stmt.strip():
                         conn.execute(sa_text(_adapt_sql(stmt, dialect)))
-        except Exception as e:
-            raise RuntimeError(
-                f"Plugin {pid} migration {path.name} failed: {e}"
-            ) from e
-        plugin_repo.record_migration(pid, version)
-        applied_now.append(version)
-        logger.info("Plugin %s: applied migration %s", pid, path.name)
+                conn.execute(sa_insert(plugin_migrations).values(
+                    plugin_id=pid, version=version, applied_at=time.time(),
+                ))
+                applied_now.append(version)
+                logger.info("Plugin %s: applied migration %s", pid, path.name)
+    except Exception as e:
+        failed_name = path.name if "path" in locals() else "desconhecida"
+        raise RuntimeError(
+            f"Plugin {pid} migration {failed_name} failed: {e}"
+        ) from e
 
     return applied_now
 

@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import re
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 if TYPE_CHECKING:
@@ -68,6 +70,21 @@ def make_plugin_db():
     """Return a context manager that opens a transactional engine connection."""
     from db.engine import get_engine
     return get_engine().begin()
+
+
+def plugin_data_dir(plugin_id: str) -> Path:
+    """Return durable storage that survives plugin code updates.
+
+    Plugins should keep uploads, generated images and other user-owned files
+    here instead of inside ``storages/plugins/<id>`` (the replaceable code
+    directory).
+    """
+    if not re.fullmatch(r"[a-z][a-z0-9_]{0,31}", plugin_id or ""):
+        raise ValueError("invalid plugin id")
+    from config.settings import get_data_dir
+    path = get_data_dir() / "storages" / "plugin_data" / plugin_id
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 @dataclasses.dataclass

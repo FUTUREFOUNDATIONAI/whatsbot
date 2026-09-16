@@ -10,6 +10,7 @@ import { LoginScreen } from './components/LoginScreen.js';
 import { PluginsManager } from './components/PluginsManager.js';
 import { PluginScreen } from './components/PluginScreen.js';
 import { ToolsManager } from './components/ToolsManager.js';
+import { Chat } from './components/Chat.js';
 import { SetupWizard } from './components/SetupWizard.js';
 import { LowBalanceModal } from './components/LowBalanceModal.js';
 import { GowaUpdateModal } from './components/GowaUpdateModal.js';
@@ -61,6 +62,7 @@ const CORE_ROUTES = {
   '/executions': 'executions',
   '/plugins': 'plugins',
   '/tools': 'tools',
+  '/chat': 'chat',
 };
 const CORE_TAB_PATHS = {
   contacts: '/',
@@ -70,6 +72,7 @@ const CORE_TAB_PATHS = {
   executions: '/executions',
   plugins: '/plugins',
   tools: '/tools',
+  chat: '/chat',
 };
 
 // Tab id used internally for plugin screens. We encode the plugin id and
@@ -80,6 +83,7 @@ function tabFromPath(pluginScreens) {
   const path = window.location.pathname;
   if (path.match(/^\/contacts\/\d+$/)) return 'contacts';
   if (path.match(/^\/executions\/\d+$/)) return 'executions';
+  if (path.match(/^\/chat(?:\/|$)/)) return 'chat';
   const screen = (pluginScreens || []).find(s => s.path === path);
   if (screen) return pluginTabId(screen);
   return CORE_ROUTES[path] || 'contacts';
@@ -159,6 +163,9 @@ function GearMenu({ tab, onTabChange, pluginScreens, hasPassword, onLogout, acco
           <${MenuItem} active=${tab === 'dashboard'} href=${CORE_TAB_PATHS.dashboard} onClick=${() => { onTabChange('dashboard'); close(); }}
             icon=${html`<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.488.488 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>`}
           >Painel</${MenuItem}>
+          <${MenuItem} active=${tab === 'chat'} href=${CORE_TAB_PATHS.chat} onClick=${() => { onTabChange('chat'); close(); }}
+            icon=${html`<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M20 2H4a2 2 0 00-2 2v18l4-4h14a2 2 0 002-2V4a2 2 0 00-2-2zM7 9h10v2H7V9zm6 5H7v-2h6v2zm4-6H7V6h10v2z"/></svg>`}
+          >Chat</${MenuItem}>
           <${MenuItem} active=${tab === 'sandbox'} href=${CORE_TAB_PATHS.sandbox} onClick=${() => { onTabChange('sandbox'); close(); }}
             icon=${html`<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M7 5h10v2h2V3c0-.55-.45-1-1-1H6c-.55 0-1 .45-1 1v4h2V5zm8.41 11.59L20 12l-4.59-4.59L14 8.83 17.17 12 14 15.17l1.41 1.42zM10 15.17L6.83 12 10 8.83 8.59 7.41 4 12l4.59 4.59L10 15.17zM17 19H7v-2H5v4c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-4h-2v2z"/></svg>`}
           >Sandbox</${MenuItem}>
@@ -602,7 +609,7 @@ function App({ onLogout, hasPassword }) {
     <div class="h-dvh overflow-hidden flex flex-col relative">
       <${GearMenu} tab=${tab} onTabChange=${setTab} pluginScreens=${pluginScreens} hasPassword=${hasPassword} onLogout=${onLogout} accountUrl=${config && config.account_url} />
 
-      <main class="flex-1 min-h-0 overflow-auto ${tab !== 'contacts' ? 'bg-wa-panel' : ''}">
+      <main class="flex-1 min-h-0 ${tab === 'chat' ? 'overflow-hidden' : 'overflow-auto'} ${tab !== 'contacts' ? 'bg-wa-panel' : ''}">
         ${activePluginScreen
           ? html`<div class="max-w-5xl mx-auto p-4">
               <${PageHeader} title=${activePluginScreen.title} onBack=${() => setTab('contacts')} />
@@ -613,6 +620,8 @@ function App({ onLogout, hasPassword }) {
                 <${PageHeader} title="Tools" onBack=${() => setTab('contacts')} />
                 <${ToolsManager} />
               </div>`
+            : tab === 'chat'
+              ? html`<div class="h-full p-3 pt-14 md:pt-3"><${Chat} /></div>`
             : tab === 'plugins'
             ? html`<div class="max-w-5xl mx-auto p-4">
                 <${PageHeader} title="Plugins" onBack=${() => setTab('contacts')} />

@@ -154,6 +154,23 @@ Teste a IA antes de colocar para funcionar:
 
 ---
 
+### Chat e Criador de Plugins
+
+Abra a engrenagem e escolha **Chat** para conversar com o assistente técnico do próprio WhatsBot:
+
+- **Tire dúvidas do sistema** — pergunte onde fica uma configuração ou como mudar um comportamento; o assistente consulta o código e a documentação atuais antes de orientar
+- **Crie plugins conversando** — cada plugin ganha um projeto com pasta, arquivos e várias conversas persistentes
+- **Atualize plugins existentes** — abra um plugin instalado, trabalhe em uma cópia de desenvolvimento e preserve seu identificador, configurações e dados
+- **Acompanhe o trabalho** — veja em tempo real arquivos lidos ou editados, comandos, testes, erros e correções
+- **Escolha modelo e raciocínio** — a escolha é independente do agente que atende no WhatsApp
+- **Valide antes de instalar** — manifest, migrations, sintaxe e testes são verificados; o ZIP fica disponível para download
+- **Instale com confirmação** — o Chat só instala ou atualiza após você clicar em **Sim**, mantendo backup para recuperação
+- **Controle o contexto** — a compactação é automática em conversas longas e também pode ser acionada com `/compact`
+
+Os projetos de desenvolvimento ficam separados da instalação ativa em `storages/plugin_creator/`. Os comandos ainda são executados com as permissões do WhatsBot na sua máquina; essa separação evita alterações acidentais no plugin ativo, mas não é uma sandbox de segurança.
+
+---
+
 ### Sistema de plugins (avançado)
 
 Quem quiser ir além do básico pode adicionar funcionalidades extras sem mexer no núcleo do programa:
@@ -166,7 +183,7 @@ Quem quiser ir além do básico pode adicionar funcionalidades extras sem mexer 
 
 Plugins ficam isolados na pasta `storages/plugins/` e podem ser instalados, ativados, desativados, exportados (`.zip`) ou removidos diretamente pela interface, sem afetar o resto do programa. Atualizar o WhatsBot **não** mexe nos seus plugins.
 
-Para criar um plugin do zero, abra o projeto no Claude Code e rode `/new-plugin` — a IA pergunta o que você quer fazer e gera tudo (código, banco, tela, configurações) automaticamente.
+Para criar um plugin do zero sem programar, abra **Engrenagem → Chat**, crie um projeto e descreva o que deseja. O assistente gera o código, executa os testes e oferece a instalação depois da validação.
 
 Documentação técnica completa em [CLAUDE.md](CLAUDE.md) (Sistema de plugins, Events e Filters).
 
