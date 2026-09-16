@@ -118,7 +118,7 @@ export function DatabaseSettings({ id, onNotify }) {
         `}
 
         ${info && info.dialect === 'sqlite' ? html`
-          <div class="flex flex-col gap-2">
+          <div id="database-migration" class="flex flex-col gap-2 scroll-mt-4">
             <label class="text-sm font-medium">URL Postgres</label>
             <input
               type="text"

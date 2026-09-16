@@ -160,7 +160,7 @@ function MessageList({ messages, streaming, running, projectId, conversationId, 
     const permalink = chatPath(projectId, conversationId, message.id);
     nodes.push(html`
       <div id=${`chat-message-${message.id}`} key=${message.id} class="group flex ${user ? 'justify-end' : 'justify-start'} my-3 scroll-mt-6 ${Number(linkedMessageId) === Number(message.id) ? 'chat-message-linked' : ''}">
-        <div class="relative max-w-[88%] md:max-w-[78%] rounded-xl px-4 py-3 shadow-sm ${user ? 'bg-wa-outgoing' : 'bg-wa-bg border border-wa-border'}">
+        <div class="chat-message-bubble relative max-w-[88%] md:max-w-[78%] rounded-xl px-4 py-3 shadow-sm ${user ? 'bg-wa-outgoing' : 'bg-wa-bg border border-wa-border'}">
           <div class="chat-markdown text-[14px] leading-6">${renderMarkdown(message.content)}</div>
           ${Number.isInteger(Number(message.id)) ? html`<a href=${permalink} onClick=${event => onMessageLink(event, message.id)} class="chat-message-link" title="Link desta mensagem" aria-label="Link desta mensagem">↗</a>` : null}
         </div>
@@ -169,7 +169,7 @@ function MessageList({ messages, streaming, running, projectId, conversationId, 
   }
   flush();
   if (streaming) {
-    nodes.push(html`<div class="flex justify-start my-3"><div class="max-w-[88%] rounded-xl px-4 py-3 bg-wa-bg border border-wa-border shadow-sm"><div class="chat-markdown text-[14px] leading-6">${renderMarkdown(streaming)}<span class="inline-block w-1.5 h-4 ml-1 bg-wa-teal animate-pulse"></span></div></div></div>`);
+    nodes.push(html`<div class="flex justify-start my-3"><div class="chat-message-bubble max-w-[88%] rounded-xl px-4 py-3 bg-wa-bg border border-wa-border shadow-sm"><div class="chat-markdown text-[14px] leading-6">${renderMarkdown(streaming)}<span class="inline-block w-1.5 h-4 ml-1 bg-wa-teal animate-pulse"></span></div></div></div>`);
   }
   return html`${nodes}`;
 }
@@ -200,6 +200,7 @@ export function Chat() {
   const [recording, setRecording] = useState(false);
   const [recordDuration, setRecordDuration] = useState(0);
   const [transcribing, setTranscribing] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const endRef = useRef(null);
   const inputRef = useRef(null);
   const modelRef = useRef(null);
@@ -330,6 +331,15 @@ export function Chat() {
   }, []);
 
   useEffect(() => {
+    if (!mobileSidebarOpen) return;
+    function closeOnEscape(event) {
+      if (event.key === 'Escape') setMobileSidebarOpen(false);
+    }
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [mobileSidebarOpen]);
+
+  useEffect(() => {
     if (linkedMessageId != null) {
       requestAnimationFrame(() => {
         const target = document.getElementById(`chat-message-${linkedMessageId}`);
@@ -345,6 +355,7 @@ export function Chat() {
       const result = await api('GET', `/api/chat/conversations/${id}`);
       setConversationId(id); setConversation(result.conversation); setMessages(result.messages || []);
       setProjectId(result.project.id); setLinkedMessageId(options.messageId || null); setInstallReady(null);
+      setMobileSidebarOpen(false); setShowFiles(false);
       setExpandedProjectIds(previous => [...new Set([...previous, result.project.id])]);
       if (result.project.kind === 'plugin') loadFiles(result.project.id);
       if (!options.skipNavigation) navigateChat(result.project.id, id, options.messageId || null);
@@ -403,6 +414,7 @@ export function Chat() {
   function selectProject(project) {
     setProjectId(project.id);
     setConversationId(''); setConversation(null); setMessages([]); setLinkedMessageId(null); setInstallReady(null);
+    setShowFiles(false);
     navigateChat(project.id);
     setExpandedProjectIds(previous => previous.includes(project.id)
       ? previous.filter(id => id !== project.id)
@@ -473,6 +485,23 @@ export function Chat() {
     const sourceIndex = projects.findIndex(project => project.id === sourceProjectId);
     const targetIndex = projects.findIndex(project => project.id === targetProjectId);
     if (sourceIndex < 0 || targetIndex < 0) return;
+    const [moved] = projects.splice(sourceIndex, 1);
+    projects.splice(targetIndex, 0, moved);
+    setData(previous => ({ ...previous, projects }));
+    try {
+      await api('POST', '/api/chat/projects/reorder', { project_ids: projects.map(project => project.id) });
+    } catch (error) {
+      setNotice(error.message);
+      await reload(projectId);
+    }
+  }
+
+  async function moveProject(projectIdToMove, offset, event) {
+    event && event.stopPropagation();
+    const projects = [...data.projects];
+    const sourceIndex = projects.findIndex(project => project.id === projectIdToMove);
+    const targetIndex = sourceIndex + offset;
+    if (sourceIndex < 0 || targetIndex < 0 || targetIndex >= projects.length) return;
     const [moved] = projects.splice(sourceIndex, 1);
     projects.splice(targetIndex, 0, moved);
     setData(previous => ({ ...previous, projects }));
@@ -669,19 +698,27 @@ export function Chat() {
 
   return html`
     <div class="chat-shell h-full min-h-0 flex text-wa-text overflow-hidden">
-      <aside class="chat-sidebar w-72 shrink-0 flex flex-col">
+      <button
+        type="button"
+        class="chat-sidebar-backdrop ${mobileSidebarOpen ? 'is-open' : ''}"
+        onClick=${() => setMobileSidebarOpen(false)}
+        aria-label="Fechar lista de projetos"
+        tabindex=${mobileSidebarOpen ? '0' : '-1'}
+      ></button>
+      <aside id="chat-project-sidebar" class="chat-sidebar w-72 shrink-0 flex flex-col ${mobileSidebarOpen ? 'is-mobile-open' : ''}">
         <div class="chat-sidebar-head p-4">
           <div class="flex items-center gap-3">
             <a href="/" class="chat-icon-button" title="Voltar ao WhatsBot" aria-label="Voltar ao WhatsBot">←</a>
             <div class="min-w-0 flex-1"><div class="font-semibold text-[15px]">Chat</div><div class="text-[11px] opacity-70">WhatsBot + Criador de Plugins</div></div>
             <button onClick=${() => setShowNew(!showNew)} class="chat-icon-button" title="Novo plugin" aria-label="Novo plugin">＋</button>
+            <button type="button" onClick=${() => setMobileSidebarOpen(false)} class="chat-icon-button chat-mobile-close" title="Fechar projetos" aria-label="Fechar projetos">×</button>
           </div>
           ${showNew ? html`<form onSubmit=${createProject} class="chat-new-project mt-4"><label class="block text-[11px] font-semibold mb-1.5">NOVO PROJETO</label><input autoFocus value=${newName} onInput=${e => setNewName(e.target.value)} placeholder="Nome do plugin" class="w-full px-3 py-2.5 rounded-lg text-sm text-wa-text"/><button class="mt-2 w-full py-2 rounded-lg bg-wa-teal text-white font-medium text-sm cursor-pointer">Criar projeto</button></form>` : null}
           ${unopened.length ? html`<select class="chat-open-plugin mt-3 w-full px-3 py-2.5 rounded-lg text-xs text-wa-text cursor-pointer" value="" onChange=${e => openInstalled(e.target.value)}><option value="">Abrir plugin instalado…</option>${unopened.map(p => html`<option value=${p.id}>${p.id}</option>`)}</select>` : null}
         </div>
         <div class="px-3 pt-4 pb-2 text-[10px] tracking-[0.14em] font-bold opacity-55">PROJETOS</div>
         <div class="flex-1 overflow-auto wa-scrollbar px-2 pb-3">
-          ${data.projects.map(p => html`
+          ${data.projects.map((p, projectIndex) => html`
             <div key=${p.id} class="mb-1" draggable="true" onDragStart=${event => { setDraggingProjectId(p.id); event.dataTransfer.effectAllowed = 'move'; }} onDragOver=${event => { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; }} onDrop=${event => { event.preventDefault(); dropProject(p.id); }} onDragEnd=${() => setDraggingProjectId('')}>
               <div class="chat-project ${projectId === p.id ? 'is-active' : ''} ${expandedProjectIds.includes(p.id) ? 'is-expanded' : ''} ${draggingProjectId === p.id ? 'is-dragging' : ''}">
                 <a href=${chatPath(p.id)} class="chat-project-main no-underline" onClick=${event => {
@@ -693,6 +730,8 @@ export function Chat() {
                   <span class="min-w-0 flex-1"><span class="block font-semibold truncate">${p.name}</span><span class="block text-[11px] truncate opacity-70">${p.plugin_id || 'Ajuda do sistema'}</span></span>
                   <span class="chat-project-chevron">›</span>
                 </a>
+                <button disabled=${projectIndex === 0} class="chat-row-action chat-mobile-reorder" onClick=${event => moveProject(p.id, -1, event)} title="Mover projeto para cima" aria-label="Mover projeto para cima">↑</button>
+                <button disabled=${projectIndex === data.projects.length - 1} class="chat-row-action chat-mobile-reorder" onClick=${event => moveProject(p.id, 1, event)} title="Mover projeto para baixo" aria-label="Mover projeto para baixo">↓</button>
                 <button class="chat-row-action" onClick=${event => renameProject(p, event)} title="Renomear projeto" aria-label="Renomear projeto">✎</button>
                 ${p.kind !== 'system' ? html`<button class="chat-row-action is-danger" onClick=${event => deleteProject(p, event)} title="Remover projeto" aria-label="Remover projeto">×</button>` : null}
               </div>
@@ -714,9 +753,20 @@ export function Chat() {
 
       <section class="chat-main flex-1 min-w-0 flex flex-col">
         <header class="chat-topbar min-h-[64px] px-5 py-2 flex items-center gap-3">
-          <div class="min-w-0 mr-auto"><div class="font-semibold truncate">${conversation ? conversation.title : project ? project.name : 'Chat'}</div><div class="text-[11px] text-wa-secondary truncate">${project && project.kind === 'plugin' ? `Projeto ${project.plugin_id}` : 'Ajuda e configuração do WhatsBot'}</div></div>
+          <button
+            type="button"
+            class="chat-mobile-menu"
+            onClick=${() => setMobileSidebarOpen(true)}
+            aria-expanded=${mobileSidebarOpen}
+            aria-controls="chat-project-sidebar"
+            title="Abrir projetos"
+            aria-label="Abrir projetos"
+          >
+            <svg viewBox="0 0 24 24" width="21" height="21" fill="currentColor" aria-hidden="true"><path d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h16v2H4v-2z"/></svg>
+          </button>
+          <div class="chat-topbar-title min-w-0 mr-auto"><div class="font-semibold truncate">${conversation ? conversation.title : project ? project.name : 'Chat'}</div><div class="text-[11px] text-wa-secondary truncate">${project && project.kind === 'plugin' ? `Projeto ${project.plugin_id}` : 'Ajuda e configuração do WhatsBot'}</div></div>
           ${project && project.kind === 'plugin' ? html`<button onClick=${() => { setShowFiles(!showFiles); loadFiles(); }} class="chat-secondary-button">▱ Arquivos</button>` : null}
-          ${installedProjectPlugin && installedProjectPlugin.load_error ? html`<button onClick=${rollback} class="chat-danger-button" title=${installedProjectPlugin.load_error}>Restaurar backup</button>` : null}
+          ${installedProjectPlugin && installedProjectPlugin.load_error ? html`<button onClick=${rollback} class="chat-danger-button" title=${installedProjectPlugin.load_error}>Restaurar</button>` : null}
         </header>
 
         <div class="flex-1 min-h-0 flex">
@@ -727,7 +777,7 @@ export function Chat() {
               ${installReady ? html`<div class="my-4 p-4 rounded-xl border border-wa-teal/40 bg-wa-bg shadow-sm">
                 <div class="font-medium">${installReady.installed ? 'Plugin validado. Quer atualizar o plugin instalado?' : 'Plugin pronto. Quer instalar?'}</div>
                 <div class="text-xs text-wa-secondary mt-1">${installReady.plugin_id} v${installReady.version} · ${installReady.tests} teste(s)</div>
-                <div class="flex gap-2 mt-3"><button onClick=${install} class="px-4 py-2 rounded bg-wa-teal text-white text-sm">Sim</button><button onClick=${() => setInstallReady(null)} class="px-4 py-2 rounded border border-wa-border text-sm">Agora não</button><a href=${`/api/chat/projects/${projectId}/export`} class="px-4 py-2 rounded border border-wa-border text-sm no-underline text-wa-text">Baixar ZIP</a></div>
+                <div class="flex flex-wrap gap-2 mt-3"><button onClick=${install} class="px-4 py-2 rounded bg-wa-teal text-white text-sm">Sim</button><button onClick=${() => setInstallReady(null)} class="px-4 py-2 rounded border border-wa-border text-sm">Agora não</button><a href=${`/api/chat/projects/${projectId}/export`} class="px-4 py-2 rounded border border-wa-border text-sm no-underline text-wa-text">Baixar ZIP</a></div>
               </div>` : null}
               <div ref=${endRef}></div>
             </div>
@@ -735,9 +785,9 @@ export function Chat() {
 
           ${showFiles && project && project.kind === 'plugin' ? html`<aside class="chat-files w-[40%] min-w-72 max-w-xl flex flex-col">
             <div class="px-3 py-2 border-b border-wa-border flex items-center justify-between"><span class="font-medium text-sm">Arquivos do projeto</span><button class="chat-icon-button" onClick=${() => setShowFiles(false)}>×</button></div>
-            <div class="flex min-h-0 flex-1">
-              <div class="w-44 overflow-auto border-r border-wa-border wa-scrollbar">${files.map(file => html`<button title=${file} onClick=${() => openFile(file)} class="chat-file-row ${selectedFile && selectedFile.path === file ? 'is-active' : ''}">${file}</button>`)}</div>
-              <pre class="flex-1 overflow-auto p-3 text-xs whitespace-pre-wrap wa-scrollbar">${selectedFile ? selectedFile.content : 'Selecione um arquivo.'}</pre>
+            <div class="chat-files-body flex min-h-0 flex-1">
+              <div class="chat-file-list w-44 overflow-auto border-r border-wa-border wa-scrollbar">${files.map(file => html`<button title=${file} onClick=${() => openFile(file)} class="chat-file-row ${selectedFile && selectedFile.path === file ? 'is-active' : ''}">${file}</button>`)}</div>
+              <pre class="chat-file-content flex-1 overflow-auto p-3 text-xs whitespace-pre-wrap wa-scrollbar">${selectedFile ? selectedFile.content : 'Selecione um arquivo.'}</pre>
             </div>
           </aside>` : null}
         </div>
@@ -749,7 +799,7 @@ export function Chat() {
               <button type="button" onClick=${cancelAudioRecording} class="chat-audio-cancel" title="Cancelar gravação" aria-label="Cancelar gravação">×</button>
               <span class="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-red-500"></span>
               <span class="font-medium text-red-500">${formatRecordTime(recordDuration)}</span>
-              <span class="min-w-0 flex-1 text-sm text-wa-secondary">Gravando áudio…</span>
+              <span class="chat-recording-label min-w-0 flex-1 text-sm text-wa-secondary">Gravando áudio…</span>
               <button type="button" onClick=${stopAudioRecording} class="chat-audio-stop" title="Parar e enviar" aria-label="Parar e enviar"><${StopIcon} /></button>
             </div>` : html`
             ${commandOptions.length ? html`<div class="chat-command-menu absolute left-0 right-0 bottom-[calc(100%+8px)] rounded-xl overflow-hidden shadow-xl">
@@ -767,14 +817,14 @@ export function Chat() {
               }
             }} placeholder=${project && project.kind === 'system' ? 'Pergunte sobre o WhatsBot…' : 'Descreva o plugin ou a alteração…'} class="chat-composer-input wa-scrollbar"></textarea>
             <div class="chat-composer-bar">
-              <div class="flex min-w-0 items-center gap-1.5">
+              <div class="chat-composer-options flex min-w-0 items-center gap-1.5">
                 <select ref=${modelRef} class="chat-model-select" value=${conversation.model} disabled=${running || transcribing} onChange=${e => updateConversation({ model: e.target.value, reasoning: '' })} title="Modelo desta conversa">
                   ${models.length ? models.map(m => html`<option value=${m.id}>${m.name || m.id}</option>`) : html`<option value=${conversation.model}>${conversation.model}</option>`}
                 </select>
                 ${supportsReasoning ? html`<select class="chat-effort-select" value=${conversation.reasoning || ''} disabled=${running || transcribing} title="Nível de raciocínio" onChange=${e => updateConversation({ reasoning: e.target.value })}><option value="">Padrão</option><option value="low">Baixo</option><option value="medium">Médio</option><option value="high">Alto</option></select>` : null}
                 <button type="button" onClick=${testCache} disabled=${running || transcribing} class="chat-composer-tool" title="Testar cache">Cache</button>
               </div>
-              <div class="flex items-center gap-2 shrink-0">
+              <div class="chat-composer-actions flex items-center gap-2 shrink-0">
                 <span class="hidden sm:inline text-[10px] text-wa-secondary">${transcribing ? 'Transcrevendo áudio…' : 'Enter envia · / comandos'}</span>
                 ${!running ? html`<button type="button" onClick=${startAudioRecording} disabled=${transcribing} class="chat-mic-button" title="Gravar áudio" aria-label="Gravar áudio"><${MicIcon} /></button>` : null}
                 ${running ? html`<button type="button" onClick=${cancel} class="chat-stop-button" title="Interromper">■</button>` : html`<button class="chat-send-button" title="Enviar" aria-label="Enviar" disabled=${transcribing || !input.trim()}>↑</button>`}

@@ -663,7 +663,7 @@ function App({ onLogout, hasPassword }) {
                 <${ToolsManager} />
               </div>`
             : tab === 'chat'
-              ? html`<div class="h-full p-3 pt-14 md:pt-3"><${Chat} /></div>`
+              ? html`<div class="h-full pt-12 md:p-3 md:pt-3"><${Chat} /></div>`
             : tab === 'plugins'
             ? html`<div class="max-w-5xl mx-auto p-4">
                 <${PageHeader} title="Plugins" onBack=${() => setTab('contacts')} />

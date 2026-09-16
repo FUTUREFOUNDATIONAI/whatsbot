@@ -107,6 +107,9 @@ A IA lembra de quem está falando e coleta informações automaticamente:
 
 ### Configurações
 
+O painel separa as opções em **Agente**, **Modelos e mídia** e **Sistema**. Cada aba e cada configuração
+tem um link direto, então a ajuda do WhatsBot consegue levar você exatamente ao lugar certo.
+
 Personalize tudo do jeito que você quiser:
 
 - **Escolher modelo de IA** — escolha qual modelo usar para conversa (com busca por nome)
@@ -118,6 +121,10 @@ Personalize tudo do jeito que você quiser:
 - **Responder a todos ou só contatos salvos** — escolha se a IA responde para qualquer pessoa ou só para quem já tem cadastro
 - **Mensagens de contexto** — defina quantas mensagens anteriores a IA leva em consideração ao responder (mais mensagens = respostas mais inteligentes, porém custam um pouco mais)
 - **Mensagens picadas** — ative ou desative a divisão de respostas em várias mensagens, e controle o intervalo entre elas
+
+O **Chat** também se adapta ao celular: projetos e conversas ficam em um menu lateral, os arquivos do
+plugin abrem em tela cheia e o campo de mensagem mantém modelo, cache, áudio e envio acessíveis sem
+apertar a conversa.
 
 ---
 
@@ -246,7 +253,7 @@ Depende do modelo escolhido e do volume de mensagens. Na prática, a maioria dos
 Sim. Tudo fica salvo em um banco de dados local no seu computador. O programa não tem servidor próprio — as conversas, contatos e configurações ficam apenas na pasta do WhatsBot na sua máquina.
 
 **Posso usar qualquer modelo de IA?**
-Sim. Há dezenas de modelos disponíveis (GPT, Gemini, Claude, Llama, e muitos outros). Você escolhe qual usar na tela de Configurações.
+Sim. Há dezenas de modelos disponíveis (GPT, Gemini, Claude, Llama, e muitos outros). Você escolhe qual usar em Painel → Modelos e mídia.
 
 **Posso desligar a IA para alguns contatos?**
 Sim. Clique com o botão direito em qualquer contato e escolha "Desativar IA". A IA para de responder para aquele contato, mas você ainda pode enviar mensagens manualmente.

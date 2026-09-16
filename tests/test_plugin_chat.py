@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -55,8 +56,8 @@ def _plugin_dir(plugin_id="demo_chat", migration_sql=None):
 
 def test_system_help_prompt_uses_current_panel_origin():
     prompt = system_help_prompt("http://localhost:8080/")
-    assert "http://localhost:8080/painel#prompt" in prompt
-    assert "[Abrir instruções do agente](http://localhost:8080/painel#prompt)" in prompt
+    assert "http://localhost:8080/painel?aba=agente#prompt" in prompt
+    assert "[Abrir instruções do agente](http://localhost:8080/painel?aba=agente#prompt)" in prompt
     assert "BASE OFICIAL DE AJUDA" in prompt
     assert "responda sem usar ferramentas" in prompt
     assert "{{base_url}}" not in prompt
@@ -124,7 +125,36 @@ def test_system_help_adds_specific_link_when_model_omits_it():
         "Como altero as instruções do agente?", "Abra as configurações do painel.",
         "http://localhost:8080",
     )
-    assert result.endswith("[Abrir instruções do agente](http://localhost:8080/painel#prompt)")
+    assert result.endswith("[Abrir instruções do agente](http://localhost:8080/painel?aba=agente#prompt)")
+
+    proxy_result = _ensure_system_help_link(
+        "Onde configuro o proxy do WhatsApp?", "Abra o painel.",
+        "http://localhost:8080",
+    )
+    assert proxy_result.endswith("[Abrir proxy do WhatsApp](http://localhost:8080/painel?aba=sistema#gowa-proxy)")
+
+
+def test_system_help_panel_links_point_to_real_tabs_and_targets():
+    knowledge = (ROOT / "agent" / "SYSTEM_HELP.md").read_text(encoding="utf-8")
+    frontend = "\n".join(
+        (ROOT / path).read_text(encoding="utf-8")
+        for path in (
+            "web/static/js/components/ConfigPanel.js",
+            "web/static/js/components/DatabaseSettings.js",
+            "web/static/js/components/GowaSettings.js",
+            "web/static/js/components/GowaProxySettings.js",
+        )
+    )
+    links = re.findall(r"\{\{base_url\}\}(/painel\?aba=([a-z-]+)(?:#([a-z-]+))?)", knowledge)
+    assert links
+    assert {slug for _, slug, _ in links} == {"agente", "modelos-midia", "sistema"}
+    tab_ids = {"agente": "agent", "modelos-midia": "models", "sistema": "system"}
+    for _, slug, anchor in links:
+        assert f"slug: '{slug}'" in frontend
+        if anchor:
+            assert f'id="{anchor}"' in frontend
+            key = rf"(?:'{re.escape(anchor)}'|{re.escape(anchor)}): '{tab_ids[slug]}'"
+            assert re.search(key, frontend), f"target #{anchor} is not mapped to tab {slug}"
 
 
 def test_chat_persistence():

@@ -1,6 +1,10 @@
 {
-  "version": "0.2.4",
+  "version": "0.2.5",
   "changelog": [
+    {
+      "version": "0.2.5",
+      "description": "- Chat adaptado para celular com projetos em menu lateral, arquivos em tela cheia e campo de mensagem responsivo\n- Ordenação de projetos no celular ganhou controles próprios para toque\n- Painel reorganizado nas abas Agente, Modelos e mídia e Sistema, com links diretos para cada configuração\n- Ajuda do sistema atualizada para abrir automaticamente a aba e a opção corretas"
+    },
     {
       "version": "0.2.4",
       "description": "- Nova versão disponível agora aparece em um pop-up ao abrir o WhatsBot, com opções para atualizar, ignorar somente aquela versão ou nunca avisar\n- Avisos de atualização podem ser reativados nas configurações e voltam automaticamente quando uma versão diferente é publicada\n- Base oficial de ajuda passou a ser carregada em todas as perguntas sobre o sistema, com busca segura no código, plugins e configurações quando necessário\n- Regras de desenvolvimento foram centralizadas no AGENTS.md, com CLAUDE.md apontando para essa fonte única\n- Verificação de releases ganhou cache e alternativa para quando a API do GitHub atingir o limite"

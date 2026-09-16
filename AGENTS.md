@@ -277,8 +277,9 @@ próxima seção), o self-update do WhatsBot em si ([server/routes/update.py](se
   e ao reconectar o WebSocket. Quando existe uma release estável mais nova, `WhatsNewModal` mostra o
   changelog e oferece três escolhas: **Atualizar agora**, **Agora não** e **Nunca avisar**. “Agora não”
   grava a versão em `whatsbot_skipped_version`; uma release com outro número volta a aparecer. “Nunca
-  avisar” desliga `whatsbot_update_notifications_enabled`, que pode ser reativado em Configurações →
-  Atualizar WhatsBot. Essas preferências ficam no banco da instalação, não no navegador.
+  avisar” desliga `whatsbot_update_notifications_enabled`, que pode ser reativado em Painel → Sistema →
+  Atualizar WhatsBot (`/painel?aba=sistema#update`). Essas preferências ficam no banco da instalação,
+  não no navegador.
 - **Compatibilidade com versões antigas**: `GET /api/update/local-version` e
   `POST /api/update/popup-seen` continuam disponíveis para frontend em cache. O marcador legado
   `storages/update_popup.json` é apenas removido e não controla mais os avisos.
@@ -295,9 +296,9 @@ próxima seção), o self-update do WhatsBot em si ([server/routes/update.py](se
 ## Atualização do GOWA
 
 O binário GOWA pode ser atualizado pelo painel em qualquer ambiente (Linux, macOS, Windows, Docker,
-Coolify), sem rebuild nem redeploy. A tela fica em Configurações → card **GOWA (motor do WhatsApp)**,
-no fim da página; a versão instalada também aparece como chip ao lado do status de conexão no topo
-do `/painel`.
+Coolify), sem rebuild nem redeploy. A tela fica em Painel → Sistema → card **GOWA (motor do WhatsApp)**
+(`/painel?aba=sistema#gowa`); a versão instalada também aparece como chip ao lado do status de conexão
+no topo do `/painel`.
 
 ### Onde o binário mora (regra fundamental)
 
@@ -367,7 +368,7 @@ Só `gowa_auto_check_enabled` está no `allowed_keys` do `PUT /api/config`; as o
 
 O WebSocket do WhatsApp é discado pelo `whatsmeow` direto, então `HTTP_PROXY`/`HTTPS_PROXY` **não**
 valem para ele. O GOWA tem um knob dedicado, disponível a partir da **8.11.0**. A tela fica no mesmo
-card **GOWA (motor do WhatsApp)**, logo abaixo da versão.
+card **GOWA (motor do WhatsApp)**, em `/painel?aba=sistema#gowa-proxy`.
 
 Dois jeitos de preencher, porque cada serviço entrega de um jeito:
 
@@ -406,6 +407,24 @@ Nenhuma dessas chaves está no `allowed_keys` do `PUT /api/config`: a escrita pa
 
 **Atenção em Docker Swarm com múltiplas réplicas**: `storages` é volume local por nó, então cada réplica
 atualizaria o próprio binário. O update loga um warning nesse caso.
+
+## Navegação do painel
+
+As configurações do core em [ConfigPanel.js](web/static/js/components/ConfigPanel.js) usam três abas:
+**Agente** (`?aba=agente`), **Modelos e mídia** (`?aba=modelos-midia`) e **Sistema**
+(`?aba=sistema`). Cada configuração visível mantém um `id` próprio para links diretos, combinando a
+aba e a âncora, como `/painel?aba=agente#prompt`. `PANEL_TARGET_TABS` também precisa mapear cada nova
+âncora para que links antigos no formato `/painel#prompt` continuem abrindo a aba correta.
+
+Ao criar, mover, renomear ou remover uma configuração do core, atualize no mesmo trabalho a lista de
+abas, o mapa de âncoras, os links de fallback em `server/routes/chat.py` e a base
+`agent/SYSTEM_HELP.md`. Configuração de plugin continua pertencendo à tela do próprio plugin.
+
+O Chat em [Chat.js](web/static/js/components/Chat.js) usa a barra lateral fixa no desktop e um drawer
+sobreposto abaixo de 768 px. Nesse modo, a conversa ocupa toda a largura, os arquivos do projeto abrem
+sobre o Chat e o compositor distribui opções e ações em duas linhas. Funcionalidades baseadas apenas
+em arrastar precisam de uma alternativa por toque; a ordem dos projetos usa setas no mobile. Preserve
+essas duas formas de navegação ao alterar projetos, arquivos ou o compositor.
 
 ## Fotos de perfil (avatars)
 

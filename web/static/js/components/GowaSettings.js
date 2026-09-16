@@ -133,7 +133,7 @@ export function GowaSettings({ id, autoCheck, onAutoCheckChange, onNotify }) {
       </h3>
 
       <div class="flex flex-col gap-4">
-        <div class="p-3 bg-wa-panel rounded-lg border border-wa-border">
+        <div id="gowa-version" class="p-3 bg-wa-panel rounded-lg border border-wa-border scroll-mt-4">
           <div class="flex items-start justify-between gap-4 flex-wrap">
             <div>
               <label class="text-sm font-semibold text-wa-text">Versão do GOWA</label>
@@ -256,9 +256,9 @@ export function GowaSettings({ id, autoCheck, onAutoCheckChange, onNotify }) {
           ` : null}
         </div>
 
-        <${GowaProxySettings} onNotify=${onNotify} />
+        <${GowaProxySettings} id="gowa-proxy" onNotify=${onNotify} />
 
-        <label class="flex items-start gap-2 cursor-pointer">
+        <label id="gowa-auto-update" class="flex items-start gap-2 cursor-pointer scroll-mt-4">
           <input
             type="checkbox"
             checked=${!!autoCheck}

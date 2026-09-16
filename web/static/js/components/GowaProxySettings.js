@@ -29,7 +29,7 @@ const EMPTY_FORM = {
  * separate fields (IP + porta, optional usuário/senha) or a single URL.
  * Saving restarts GOWA — the WhatsApp socket only picks the proxy up on start.
  */
-export function GowaProxySettings({ onNotify }) {
+export function GowaProxySettings({ id, onNotify }) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [meta, setMeta] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -125,7 +125,7 @@ export function GowaProxySettings({ onNotify }) {
   const envLocked = !!(meta && meta.env_locked);
 
   return html`
-    <div class="p-3 bg-wa-panel rounded-lg border border-wa-border">
+    <div id=${id || undefined} class="p-3 bg-wa-panel rounded-lg border border-wa-border scroll-mt-4">
       <div class="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <label class="text-sm font-semibold text-wa-text">Proxy da conexão do WhatsApp</label>
