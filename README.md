@@ -185,7 +185,7 @@ Plugins ficam isolados na pasta `storages/plugins/` e podem ser instalados, ativ
 
 Para criar um plugin do zero sem programar, abra **Engrenagem → Chat**, crie um projeto e descreva o que deseja. O assistente gera o código, executa os testes e oferece a instalação depois da validação.
 
-Documentação técnica completa em [CLAUDE.md](CLAUDE.md) (Sistema de plugins, Events e Filters).
+Documentação técnica completa em [AGENTS.md](AGENTS.md) (Sistema de plugins, Events e Filters).
 
 ---
 

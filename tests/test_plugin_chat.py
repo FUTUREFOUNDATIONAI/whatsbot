@@ -26,7 +26,13 @@ from server.routes.chat import (  # noqa: E402
     _safe_workspace_file,
     validate_workspace,
 )
-from agent.plugin_chat import system_help_prompt  # noqa: E402
+from agent.plugin_chat import (  # noqa: E402
+    _inspect_system_state,
+    _safe_reference_path,
+    load_system_help_knowledge,
+    reference_functions,
+    system_help_prompt,
+)
 
 
 def _plugin_dir(plugin_id="demo_chat", migration_sql=None):
@@ -51,7 +57,66 @@ def test_system_help_prompt_uses_current_panel_origin():
     prompt = system_help_prompt("http://localhost:8080/")
     assert "http://localhost:8080/painel#prompt" in prompt
     assert "[Abrir instruções do agente](http://localhost:8080/painel#prompt)" in prompt
+    assert "BASE OFICIAL DE AJUDA" in prompt
+    assert "responda sem usar ferramentas" in prompt
+    assert "{{base_url}}" not in prompt
     assert "https://" not in prompt
+
+
+def test_system_help_knowledge_is_reloaded_and_has_safe_fallback():
+    knowledge = tmp / "SYSTEM_HELP.md"
+    knowledge.write_text("primeira versão", encoding="utf-8")
+    assert load_system_help_knowledge(knowledge) == "primeira versão"
+    knowledge.write_text("versão atualizada", encoding="utf-8")
+    assert load_system_help_knowledge(knowledge) == "versão atualizada"
+    assert "Consulte as referências" in load_system_help_knowledge(tmp / "missing.md")
+
+
+def test_reference_paths_include_installed_plugin_sources_but_not_runtime_data():
+    plugin_manifest = tmp / "storages" / "plugins" / "help_demo" / "plugin.yaml"
+    plugin_manifest.parent.mkdir(parents=True, exist_ok=True)
+    plugin_manifest.write_text("id: help_demo\n", encoding="utf-8")
+    assert _safe_reference_path(tmp, "storages/plugins/help_demo/plugin.yaml") == plugin_manifest.resolve()
+    try:
+        _safe_reference_path(tmp, "storages/whatsbot.db")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("runtime database must not be exposed to the help agent")
+
+
+def test_help_state_inspection_excludes_secrets_and_personal_rows():
+    from db.repositories import config_repo, plugin_repo
+
+    config_repo.set("openrouter_api_key", "secret-api-key")
+    config_repo.set("web_password_hash", "secret-password-hash")
+    config_repo.set("auto_reply", True)
+    settings_text = _inspect_system_state("settings")
+    settings = json.loads(settings_text)
+    assert settings["auto_reply"] is True
+    assert settings["api_key_configured"] is True
+    assert settings["panel_password_configured"] is True
+    assert "secret-api-key" not in settings_text
+    assert "secret-password-hash" not in settings_text
+    assert "openrouter_api_key" not in settings
+    assert "web_password_hash" not in settings
+
+    plugin_repo.upsert("help_state_demo", "1.0.0", enabled=True)
+    plugins = json.loads(_inspect_system_state("plugins"))
+    assert any(row["id"] == "help_state_demo" and row["enabled"] for row in plugins)
+
+    schema = json.loads(_inspect_system_state("schema"))
+    assert schema["database"] == "sqlite"
+    contacts = next(row for row in schema["tables"] if row["table"] == "contacts")
+    assert "phone" in contacts["columns"]
+    assert all("rows" not in table for table in schema["tables"])
+
+
+def test_runtime_state_tool_is_only_added_to_system_help():
+    help_tool_names = {tool.name for tool in reference_functions(ROOT, include_state=True)}
+    plugin_tool_names = {tool.name for tool in reference_functions(ROOT)}
+    assert "inspect_whatsbot_state" in help_tool_names
+    assert "inspect_whatsbot_state" not in plugin_tool_names
 
 
 def test_system_help_adds_specific_link_when_model_omits_it():
@@ -371,6 +436,10 @@ def test_chat_api_and_streaming_without_external_services():
 def main():
     tests = [
         test_system_help_prompt_uses_current_panel_origin,
+        test_system_help_knowledge_is_reloaded_and_has_safe_fallback,
+        test_reference_paths_include_installed_plugin_sources_but_not_runtime_data,
+        test_help_state_inspection_excludes_secrets_and_personal_rows,
+        test_runtime_state_tool_is_only_added_to_system_help,
         test_system_help_adds_specific_link_when_model_omits_it,
         test_chat_persistence,
         test_project_order_and_soft_delete,

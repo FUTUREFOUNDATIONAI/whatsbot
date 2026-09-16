@@ -17,7 +17,7 @@ import { GowaUpdateModal } from './components/GowaUpdateModal.js';
 import { WhatsNewModal } from './components/WhatsNewModal.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { useConfig } from './hooks/useConfig.js';
-import { checkAuth, authHeaders, getUnreadCount, installGowaUpdate, skipGowaVersion, getLocalVersionInfo, markUpdatePopupSeen } from './services/api.js';
+import { checkAuth, authHeaders, getUnreadCount, installGowaUpdate, skipGowaVersion, checkForUpdates, performUpdate, skipWhatsBotVersion } from './services/api.js';
 import { playTransferAlert } from './utils/alertSound.js';
 import { getNotifPref, playNotificationSound, showBrowserNotification } from './utils/notifications.js';
 
@@ -282,6 +282,8 @@ function App({ onLogout, hasPassword }) {
   const [lowBalance, setLowBalance] = useState(null);
   const [gowaUpdate, setGowaUpdate] = useState(null);
   const [whatsNew, setWhatsNew] = useState(null);
+  const [whatsbotUpdating, setWhatsbotUpdating] = useState(false);
+  const [whatsbotUpdateError, setWhatsbotUpdateError] = useState('');
   const [gowaProgress, setGowaProgress] = useState(null);
   const [gowaInstalling, setGowaInstalling] = useState(false);
   const [initialContactId, setInitialContactId] = useState(contactIdFromPath);
@@ -357,35 +359,75 @@ function App({ onLogout, hasPassword }) {
     }
   }, [config]);
 
-  // "What's new" check — local file only (no GitHub call), so it's safe to
-  // call often. Runs on every WS connect (see onWsConnect below), not just
-  // on mount: after a self-update the operator restarts the server manually,
-  // and this tab is never reloaded, so a mount-only check would never see
-  // the new version until a hard refresh. The WS client auto-reconnects
-  // (services/websocket.js) once the server is back up, which fires
-  // onWsConnect again and re-runs this — that's the "server just restarted"
-  // signal, and it doubles as the original boot check for a fresh page load
-  // (the first successful WS connection). `popup_shown` is computed
-  // server-side from a storages/ marker that ONLY the in-app "Atualizar"
-  // button ever writes (see _perform_update in server/routes/update.py) — so
-  // this only ever fires right after a manual self-update, never on a fresh
-  // install, a `git pull`, or a Coolify/Docker redeploy that just happens to
-  // bring a newer `version` along. Closing the modal clears that marker, so
-  // a reconnect afterwards is a no-op. Only ever shows the entry for the
-  // version currently installed — not the full history — even if this
-  // install skipped several releases in between.
-  const checkWhatsNew = useCallback(() => {
-    getLocalVersionInfo()
+  // Check for a newer stable release on page load and reconnect. The backend
+  // caches GitHub responses and persists both "skip this version" and the
+  // global notification preference for the whole installation.
+  const checkWhatsBotUpdate = useCallback(() => {
+    checkForUpdates()
       .then(res => {
         const d = res && res.ok && res.data;
-        if (!d || !d.version || d.version === '0.0.0' || d.popup_shown) return;
-        const changelog = Array.isArray(d.changelog) ? d.changelog : [];
-        const current = changelog.find(e => e.version === d.version) || changelog[0];
-        if (!current || !current.description) { markUpdatePopupSeen(); return; }
-        setWhatsNew({ version: d.version, description: current.description });
+        if (!d) return;
+        if (!d.should_notify) {
+          setWhatsNew(null);
+          setWhatsbotUpdating(false);
+          setWhatsbotUpdateError('');
+          return;
+        }
+        setWhatsNew({
+          currentVersion: d.current_version,
+          version: d.latest_version,
+          description: d.latest_description,
+        });
       })
       .catch(() => { /* ignore */ });
   }, []);
+
+  useEffect(() => { checkWhatsBotUpdate(); }, [checkWhatsBotUpdate]);
+
+  async function handleWhatsBotUpdateNow() {
+    setWhatsbotUpdating(true);
+    setWhatsbotUpdateError('');
+    try {
+      const res = await performUpdate();
+      if (!res || !res.ok) {
+        setWhatsbotUpdateError((res && res.error) || 'Não foi possível atualizar o WhatsBot.');
+        setWhatsbotUpdating(false);
+        return;
+      }
+      setNotification(res.data?.message || 'Atualização instalada. Reiniciando o WhatsBot...');
+      // Keep the modal locked while the server restarts. The WebSocket
+      // reconnect runs checkWhatsBotUpdate again and closes it.
+    } catch (_) {
+      setWhatsbotUpdateError('Erro de conexão ao atualizar o WhatsBot.');
+      setWhatsbotUpdating(false);
+    }
+  }
+
+  async function handleWhatsBotLater() {
+    const version = whatsNew && whatsNew.version;
+    if (!version) return setWhatsNew(null);
+    try {
+      const res = await skipWhatsBotVersion(version);
+      if (!res || !res.ok) {
+        setWhatsbotUpdateError((res && res.error) || 'Não foi possível guardar esta escolha.');
+        return;
+      }
+      setWhatsNew(null);
+      setWhatsbotUpdateError('');
+    } catch (_) {
+      setWhatsbotUpdateError('Erro de conexão ao guardar esta escolha.');
+    }
+  }
+
+  async function handleWhatsBotNever() {
+    const result = await save({ whatsbot_update_notifications_enabled: false });
+    if (!result || !result.ok) {
+      setWhatsbotUpdateError((result && result.message) || 'Não foi possível desativar os avisos.');
+      return;
+    }
+    setWhatsNew(null);
+    setWhatsbotUpdateError('');
+  }
 
   useWebSocket({
     onStatus: useCallback((data) => setStatus(data), []),
@@ -429,7 +471,7 @@ function App({ onLogout, hasPassword }) {
       setNotification(data && data.message ? data.message : '');
       if (data && data.ok) setGowaUpdate(null);
     }, []),
-    onWsConnect: useCallback(() => { setWsConnected(true); checkWhatsNew(); }, [checkWhatsNew]),
+    onWsConnect: useCallback(() => { setWsConnected(true); checkWhatsBotUpdate(); }, [checkWhatsBotUpdate]),
     onWsDisconnect: useCallback(() => setWsConnected(false), []),
   });
 
@@ -699,9 +741,14 @@ function App({ onLogout, hasPassword }) {
       />` : null}
 
       ${whatsNew ? html`<${WhatsNewModal}
+        currentVersion=${whatsNew.currentVersion}
         version=${whatsNew.version}
         description=${whatsNew.description}
-        onClose=${() => { markUpdatePopupSeen(); setWhatsNew(null); }}
+        updating=${whatsbotUpdating}
+        error=${whatsbotUpdateError}
+        onUpdate=${handleWhatsBotUpdateNow}
+        onLater=${handleWhatsBotLater}
+        onNever=${handleWhatsBotNever}
       />` : null}
     </div>
   `;

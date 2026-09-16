@@ -19,13 +19,33 @@ from config.settings import LLM_API_BASE_URL
 
 logger = logging.getLogger(__name__)
 
+SYSTEM_HELP_KNOWLEDGE_PATH = Path(__file__).with_name("SYSTEM_HELP.md")
 _REFERENCE_EXTENSIONS = {".md", ".py", ".js", ".css", ".html", ".yaml", ".yml", ".txt", ".toml"}
-_REFERENCE_ROOTS = ("README.md", "CLAUDE.md", "agent", "config", "db", "docs", "plugins", "server", "web", "assets/plugin_examples")
-_BLOCKED_REFERENCE_PARTS = {"storages", ".git", "venv", "logs", "__pycache__"}
+_REFERENCE_ROOTS = (
+    "README.md", "CLAUDE.md", "AGENTS.md", "agent", "config", "db", "docs", "plugins",
+    "server", "web", "assets/plugin_examples", "storages/plugins",
+)
+_BLOCKED_REFERENCE_PARTS = {".git", "venv", "logs", "__pycache__", "plugin_data"}
+_SAFE_HELP_CONFIG_KEYS = {
+    "model", "improvement_model", "audio_model", "image_model", "document_model",
+    "auto_reply", "default_ai_enabled", "max_context_messages", "inactivity_timeout_min",
+    "message_batch_delay", "response_delay_min", "response_delay_max", "split_messages",
+    "split_message_delay", "audio_transcription_mode", "audio_transcription_target",
+    "audio_transcription_chat_prefix", "image_transcription_enabled",
+    "document_transcription_enabled", "transfer_alert_enabled", "transfer_alert_duration",
+    "group_reply_mode", "low_balance_enabled", "low_balance_threshold", "max_executions",
+    "ai_engine_enabled", "setup_completed", "gowa_auto_check_enabled", "gowa_latest_version",
+    "gowa_last_check_at", "gowa_proxy_enabled", "gowa_proxy_mode", "gowa_proxy_scheme",
+    "whatsbot_update_notifications_enabled", "whatsbot_skipped_version",
+}
 
 SYSTEM_HELP_PROMPT = """Você é a ajuda integrada do WhatsBot.
 Responda em português brasileiro, com frases curtas e linguagem para uma pessoa sem conhecimento técnico.
-Seu único escopo é explicar como usar e configurar o WhatsBot. Consulte as referências somente quando precisar confirmar uma opção ou um comportamento específico. Você pode ler o sistema, mas nunca o modifica.
+Seu único escopo é explicar como usar e configurar o WhatsBot. Você pode ler o sistema, mas nunca o modifica.
+
+A BASE OFICIAL DE AJUDA abaixo já está carregada nesta mensagem. Consulte-a primeiro e responda sem usar ferramentas quando ela trouxer a orientação necessária.
+Use as ferramentas de consulta somente se a informação estiver ausente, incompleta ou parecer incompatível com a versão atual. Nesse caso, faça buscas objetivas nas referências do sistema, no código dos plugins instalados e na estrutura do banco. Nunca consulte nem exponha mensagens, contatos, chaves, senhas ou outros dados pessoais.
+Se precisar investigar, conclua a resposta em linguagem simples e apresente apenas o caminho que a pessoa deve seguir. Não cite nomes de arquivos ou detalhes internos, salvo se ela pedir uma explicação técnica.
 
 Você não cria, planeja, pesquisa nem altera plugins neste projeto. Se o usuário quiser criar ou modificar um plugin, explique em uma frase que ele deve clicar no botão + no topo da barra lateral esquerda do Chat, criar um projeto e descrever ali o que deseja. Não faça perguntas sobre o plugin e não use ferramentas para investigar esse pedido.
 
@@ -33,50 +53,33 @@ Nunca mencione endpoints, REST, JSON, IDs, banco de dados, classes ou detalhes d
 """
 
 
+def load_system_help_knowledge(path: Path | None = None) -> str:
+    """Read the canonical help base on every help-agent construction.
+
+    Reading it at construction time keeps a long-running development server in
+    sync with documentation edits and makes this file the single maintained
+    source of end-user navigation guidance.
+    """
+    knowledge_path = path or SYSTEM_HELP_KNOWLEDGE_PATH
+    try:
+        content = knowledge_path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        logger.warning("System help knowledge could not be loaded from %s: %s", knowledge_path, exc)
+        return "Base oficial indisponível. Consulte as referências do sistema antes de responder."
+    return content or "Base oficial vazia. Consulte as referências do sistema antes de responder."
+
+
 def system_help_prompt(panel_base_url: str = "") -> str:
-    """Return the help prompt with links for the address the user is using.
+    """Return the help prompt with the canonical base and current address.
 
     The base URL comes from the current request, so a user accessing a local
     installation receives ``localhost:port`` links while a hosted installation
-    receives its public domain. Keeping the link catalog in the system prompt
-    lets the model choose one precise destination without researching the UI.
+    receives its public domain. The Markdown base is loaded on each call so it
+    remains the source of truth for end-user features and navigation.
     """
     base = (panel_base_url or "").rstrip("/")
-    links = f"""
-
-Links diretos do sistema (use apenas quando forem relevantes):
-- Painel principal: {base}/painel
-- Ativar respostas automáticas: {base}/painel#auto-reply
-- IA padrão para novos contatos: {base}/painel#default-ai
-- Respostas em grupos: {base}/painel#groups
-- Chave de API: {base}/painel#api-key
-- Modelo de IA do chat: {base}/painel#model
-- Modelo de melhoria: {base}/painel#improvement-model
-- Instruções do agente ou prompt: {base}/painel#prompt
-- Descrição de imagens: {base}/painel#image-transcription
-- Leitura de documentos: {base}/painel#document-transcription
-- Transcrição de áudio: {base}/painel#audio-transcription
-- Mensagens de contexto: {base}/painel#context
-- Agrupamento de mensagens: {base}/painel#batch
-- Divisão das respostas: {base}/painel#split-messages
-- Alerta de transferência para humano: {base}/painel#transfer-alert
-- Aviso de saldo baixo: {base}/painel#low-balance
-- Marcar conversas como lidas ou não lidas: {base}/painel#mark-conversations
-- Comportamento das respostas: {base}/painel#behavior
-- Senha do painel: {base}/painel#password
-- Limite de execuções salvas: {base}/painel#max-executions
-- Banco de dados: {base}/painel#database
-- Atualizações do WhatsBot: {base}/painel#update
-- Motor do WhatsApp (GOWA): {base}/painel#gowa
-- Custos de IA: {base}/costs
-- Execuções: {base}/executions
-- Ferramentas: {base}/tools
-- Plugins instalados: {base}/plugins
-- Chat e criação de plugin: {base}/chat
-
-Quando a pessoa perguntar como fazer algo, explique somente o necessário e inclua o link direto mais específico em Markdown, por exemplo: [Abrir instruções do agente]({base}/painel#prompt). Use o endereço acima exatamente como está; não invente caminhos, não use links para arquivos internos e não liste vários links sem necessidade. Se a pergunta envolver plugin, encaminhe para a página de Plugins ou para o Chat conforme o caso.
-"""
-    return SYSTEM_HELP_PROMPT.rstrip() + links
+    knowledge = load_system_help_knowledge().replace("{{base_url}}", base)
+    return f"{SYSTEM_HELP_PROMPT.rstrip()}\n\n--- BASE OFICIAL DE AJUDA ---\n{knowledge}"
 
 PLUGIN_PROMPT = """Você é o Criador de Plugins do WhatsBot. Converse em português brasileiro com uma pessoa que não sabe programar.
 
@@ -146,7 +149,53 @@ def _is_allowed_reference(relative: Path) -> bool:
     return any(value == item or value.startswith(item + "/") for item in _REFERENCE_ROOTS)
 
 
-def reference_functions(project_root: Path) -> list[Function]:
+def _inspect_system_state(section: str) -> str:
+    """Return support diagnostics without exposing user content or secrets."""
+    section = (section or "settings").strip().lower()
+    if section == "settings":
+        from config.settings import DEFAULT_CONFIG
+        from db.repositories import config_repo
+
+        stored = config_repo.get_all()
+        settings = {
+            key: stored.get(key, DEFAULT_CONFIG.get(key))
+            for key in sorted(_SAFE_HELP_CONFIG_KEYS)
+            if key in stored or key in DEFAULT_CONFIG
+        }
+        settings["api_key_configured"] = bool(stored.get("openrouter_api_key"))
+        settings["panel_password_configured"] = bool(stored.get("web_password_hash"))
+        return json.dumps(settings, ensure_ascii=False, default=str)
+
+    if section == "plugins":
+        from db.repositories import plugin_repo
+
+        plugins = [
+            {
+                "id": row.get("id"),
+                "version": row.get("version"),
+                "enabled": bool(row.get("enabled")),
+                "load_status": "error" if row.get("load_error") else "ok",
+            }
+            for row in plugin_repo.list_all()
+        ]
+        return json.dumps(plugins, ensure_ascii=False)
+
+    if section == "schema":
+        from sqlalchemy import inspect as sqlalchemy_inspect
+        from db.engine import get_engine
+
+        engine = get_engine()
+        inspector = sqlalchemy_inspect(engine)
+        tables = []
+        for table_name in sorted(inspector.get_table_names())[:100]:
+            columns = [column["name"] for column in inspector.get_columns(table_name)[:80]]
+            tables.append({"table": table_name, "columns": columns})
+        return json.dumps({"database": engine.dialect.name, "tables": tables}, ensure_ascii=False)
+
+    return "Error: seção inválida; use settings, plugins ou schema"
+
+
+def reference_functions(project_root: Path, *, include_state: bool = False) -> list[Function]:
     async def list_files(directory: str = ".", limit: int = 200) -> str:
         base = project_root if directory in ("", ".") else _safe_reference_path(project_root, directory)
         if not base.exists():
@@ -202,7 +251,10 @@ def reference_functions(project_root: Path) -> list[Function]:
                 continue
         return "\n".join(found) or "Nenhuma ocorrência encontrada."
 
-    return [
+    async def inspect_state(section: str = "settings") -> str:
+        return await asyncio.to_thread(_inspect_system_state, section)
+
+    functions = [
         Function(
             name="list_whatsbot_files", description="Lista arquivos de documentação e código do WhatsBot disponíveis para consulta.",
             parameters={"type": "object", "properties": {"directory": {"type": "string"}, "limit": {"type": "integer"}}},
@@ -219,6 +271,17 @@ def reference_functions(project_root: Path) -> list[Function]:
             entrypoint=search, skip_entrypoint_processing=True,
         ),
     ]
+    if include_state:
+        functions.append(Function(
+            name="inspect_whatsbot_state",
+            description="Consulta o estado seguro do WhatsBot para diagnóstico: configurações operacionais sem segredos, plugins registrados ou estrutura das tabelas sem registros pessoais.",
+            parameters={
+                "type": "object",
+                "properties": {"section": {"type": "string", "enum": ["settings", "plugins", "schema"]}},
+            },
+            entrypoint=inspect_state, skip_entrypoint_processing=True,
+        ))
+    return functions
 
 
 def build_model(api_key: str, model_id: str, reasoning: str = "") -> OpenAILike:
@@ -246,7 +309,7 @@ def build_agent(
         tools: list = []
         system_message = DISCOVERY_PROMPT
     elif project_kind == "system":
-        tools = reference_functions(project_root)
+        tools = reference_functions(project_root, include_state=True)
         system_message = system_help_prompt(panel_base_url)
     else:
         tools = reference_functions(project_root)

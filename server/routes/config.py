@@ -67,6 +67,9 @@ def register_routes(app, deps):
             "gowa_skipped_version": settings.get("gowa_skipped_version", ""),
             "gowa_latest_version": settings.get("gowa_latest_version", ""),
             "gowa_last_check_at": settings.get("gowa_last_check_at", 0.0),
+            "whatsbot_update_notifications_enabled": settings.get(
+                "whatsbot_update_notifications_enabled", True,
+            ),
         })
 
     @app.put("/api/config")
@@ -89,6 +92,7 @@ def register_routes(app, deps):
             # Only the toggle is user-writable here. gowa_skipped_version has
             # its own endpoint and the other two are written by the server.
             "gowa_auto_check_enabled",
+            "whatsbot_update_notifications_enabled",
         }
         keys_changed = []
         for key, value in body.items():

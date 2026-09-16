@@ -42,7 +42,7 @@ COPY db/ db/
 COPY plugins/ plugins/
 COPY server/ server/
 COPY web/ web/
-COPY main.py alembic.ini GOWA_VERSION ./
+COPY main.py alembic.ini GOWA_VERSION WHATSBOT_VERSION AGENTS.md CLAUDE.md README.md ./
 
 # Create bin/gowa symlink so gowa/manager.py finds the binary at expected path,
 # plus the stamp that tells the updater which version this image shipped.

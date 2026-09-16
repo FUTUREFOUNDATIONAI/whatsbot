@@ -1,6 +1,10 @@
 {
-  "version": "0.2.3",
+  "version": "0.2.4",
   "changelog": [
+    {
+      "version": "0.2.4",
+      "description": "- Nova versão disponível agora aparece em um pop-up ao abrir o WhatsBot, com opções para atualizar, ignorar somente aquela versão ou nunca avisar\n- Avisos de atualização podem ser reativados nas configurações e voltam automaticamente quando uma versão diferente é publicada\n- Base oficial de ajuda passou a ser carregada em todas as perguntas sobre o sistema, com busca segura no código, plugins e configurações quando necessário\n- Regras de desenvolvimento foram centralizadas no AGENTS.md, com CLAUDE.md apontando para essa fonte única\n- Verificação de releases ganhou cache e alternativa para quando a API do GitHub atingir o limite"
+    },
     {
       "version": "0.2.3",
       "description": "- Corrigido o erro 404 do Chat após atualizar no Docker, Linux ou Coolify: o WhatsBot agora reinicia automaticamente para carregar as novas rotas\n- Ajuda do sistema agora fornece links diretos usando o domínio ou localhost atual\n- Configurações do painel ganharam links com âncoras para abrir diretamente prompt, modelos, mídias, automação, senha, banco e atualizações"

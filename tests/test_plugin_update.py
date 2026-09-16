@@ -13,6 +13,7 @@ direto (``python tests/test_plugin_update.py``) ou ser coletado pelo pytest.
 from __future__ import annotations
 
 import io
+import json
 import os
 import sys
 import tempfile
@@ -283,6 +284,122 @@ def test_whatsbot_self_update_schedules_restart():
         asyncio.to_thread = original_to_thread
 
 
+def test_whatsbot_update_notification_choices():
+    """Skip is per release; disabling notifications suppresses every release."""
+    import asyncio
+    from fastapi import FastAPI
+    import server.routes.update as update_routes
+
+    root = Path(tempfile.mkdtemp(prefix="whatsbot_release_notice_"))
+    (root / "WHATSBOT_VERSION").write_text(json.dumps({
+        "version": "1.0.0",
+        "changelog": [{"version": "1.0.0", "description": "Atual"}],
+    }), encoding="utf-8")
+
+    class FakeSettings(dict):
+        data_dir = root
+
+        def save(self):
+            return None
+
+    settings = FakeSettings(
+        whatsbot_update_notifications_enabled=True,
+        whatsbot_skipped_version="",
+    )
+    latest = {
+        "tag": "v1.1.0", "version": "1.1.0", "description": "- melhoria",
+        "url": "https://example.test/v1.1.0",
+    }
+    original_fetch = update_routes._fetch_latest_release
+    original_to_thread = asyncio.to_thread
+    try:
+        async def inline_to_thread(function, *args, **kwargs):
+            return function(*args, **kwargs)
+
+        asyncio.to_thread = inline_to_thread
+        update_routes._fetch_latest_release = lambda _force=False: dict(latest)
+        app = FastAPI()
+        update_routes.register_routes(app, type("Deps", (), {"settings": settings})())
+
+        def endpoint(path, method):
+            return next(
+                route.endpoint for route in app.routes
+                if getattr(route, "path", None) == path and method in getattr(route, "methods", set())
+            )
+
+        check_update = endpoint("/api/update/check", "GET")
+        skip_version = endpoint("/api/update/skip-version", "POST")
+
+        available = asyncio.run(check_update(False))["data"]
+        assert available["update_available"] is True
+        assert available["should_notify"] is True
+
+        skipped = asyncio.run(skip_version({"version": "1.1.0"}))
+        assert skipped["ok"] is True
+        assert asyncio.run(check_update(False))["data"]["should_notify"] is False
+
+        latest.update(tag="v1.2.0", version="1.2.0", description="- outra melhoria")
+        assert asyncio.run(check_update(False))["data"]["should_notify"] is True
+
+        settings["whatsbot_update_notifications_enabled"] = False
+        disabled = asyncio.run(check_update(False))["data"]
+        assert disabled["notifications_enabled"] is False
+        assert disabled["should_notify"] is False
+
+        settings["whatsbot_update_notifications_enabled"] = True
+        latest.update(tag="v0.9.0", version="0.9.0")
+        older = asyncio.run(check_update(False))["data"]
+        assert older["update_available"] is False
+        assert older["should_notify"] is False
+    finally:
+        update_routes._fetch_latest_release = original_fetch
+        asyncio.to_thread = original_to_thread
+
+
+def test_release_lookup_falls_back_without_github_api():
+    """The public release page still yields a changelog after API rate limits."""
+    import server.routes.update as update_routes
+
+    class FakeResponse:
+        def __init__(self, url, payload=b""):
+            self._url = url
+            self._payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def geturl(self):
+            return self._url
+
+        def read(self):
+            return self._payload
+
+    version_payload = json.dumps({
+        "version": "1.2.3",
+        "changelog": [{"version": "1.2.3", "description": "- correção testada"}],
+    }).encode()
+    original_urlopen = update_routes.urllib.request.urlopen
+    try:
+        def fake_urlopen(request, timeout=0):
+            url = request.full_url
+            if url.endswith("/releases/latest"):
+                return FakeResponse("https://github.com/Techify-one/whatsbot/releases/tag/v1.2.3")
+            if "/v1.2.3/WHATSBOT_VERSION" in url:
+                return FakeResponse(url, version_payload)
+            raise AssertionError(f"URL inesperada: {url}")
+
+        update_routes.urllib.request.urlopen = fake_urlopen
+        release = update_routes._fetch_release_without_api()
+        assert release["tag"] == "v1.2.3"
+        assert release["version"] == "1.2.3"
+        assert release["description"] == "- correção testada"
+    finally:
+        update_routes.urllib.request.urlopen = original_urlopen
+
+
 def main() -> int:
     tests = [
         test_update_preserves_table_data,
@@ -295,6 +412,8 @@ def main() -> int:
         test_recover_restores_backup_when_no_staging,
         test_recover_clears_leftovers_when_target_present,
         test_whatsbot_self_update_schedules_restart,
+        test_whatsbot_update_notification_choices,
+        test_release_lookup_falls_back_without_github_api,
     ]
     failures = 0
     for t in tests:

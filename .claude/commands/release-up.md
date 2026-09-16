@@ -6,7 +6,7 @@ Crie uma nova release do WhatsBot no GitHub seguindo estes passos:
 4. Gere o changelog automático: liste os commits desde a última tag de release (`git log <última_tag>..HEAD --oneline --no-merges`). Se não houver tag anterior, use os últimos 20 commits
 5. Atualize o arquivo `WHATSBOT_VERSION` (JSON na raiz, lido por `/api/update` no self-update do painel):
    - Troque o campo `"version"` de nível superior para a nova versão
-   - **Adicione** (não substitua) uma nova entrada no INÍCIO da lista `"changelog"`, com a nova versão e uma descrição enxuta (bullets em texto puro, sem markdown) baseada no changelog do passo 4. As entradas de versões anteriores continuam no array — é esse histórico acumulado que alimenta o popup de novidades quando alguém pula várias releases de uma vez
+   - **Adicione** (não substitua) uma nova entrada no INÍCIO da lista `"changelog"`, com a nova versão e uma descrição enxuta (bullets em texto puro, sem markdown) baseada no changelog do passo 4. As entradas de versões anteriores continuam no array para preservar o histórico local; a entrada da nova versão também serve de fallback para o aviso quando a API do GitHub atinge o limite
    ```json
    {
      "version": "{nova_versão}",
@@ -16,7 +16,7 @@ Crie uma nova release do WhatsBot no GitHub seguindo estes passos:
      ]
    }
    ```
-   Esse arquivo viaja dentro do zip da tag — é ele que o botão "Atualizar" do painel usa para saber a versão instalada. O popup de novidades NÃO é controlado por um campo deste arquivo (ele é git-tracked, então isso mostraria o popup pra qualquer instalação nova nessa versão, não só pra quem atualizou manualmente) — é armado em `storages/update_popup.json`, exclusivamente por `_perform_update()` em [server/routes/update.py](../../server/routes/update.py), logo após o self-update aplicar essa versão. **Sempre bumpe `version` junto com a tag**, senão o self-update para de refletir a versão real.
+   Esse arquivo viaja dentro do zip da tag — é ele que o botão "Atualizar" do painel usa para saber a versão instalada e é também o fallback do changelog quando a API do GitHub atinge o limite. O aviso de nova versão compara esse número com a última release e guarda as escolhas do usuário no banco da instalação. **Sempre bumpe `version` junto com a tag**, senão o self-update e o aviso deixam de refletir a versão real.
 6. Faça commit de `WHATSBOT_VERSION` junto com qualquer outra mudança pendente (git add + commit com mensagem descritiva, ex: `chore(release): bump WHATSBOT_VERSION para {nova_versão}`)
 7. Push para origin e upstream na branch main
 8. Crie a release no GitHub via `gh release create`, apontando para o commit que acabou de subir (que já contém o `WHATSBOT_VERSION` bumpado):

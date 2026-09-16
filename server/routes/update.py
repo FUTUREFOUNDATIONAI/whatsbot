@@ -3,8 +3,11 @@
 import asyncio
 import json
 import logging
+import re
 import shutil
 import tempfile
+import time
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -16,7 +19,11 @@ logger = logging.getLogger(__name__)
 
 GITHUB_REPO = "Techify-one/whatsbot"
 GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+GITHUB_LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
+GITHUB_RAW_VERSION_URL_TEMPLATE = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{{tag}}/WHATSBOT_VERSION"
 GITHUB_TAG_ZIP_URL_TEMPLATE = f"https://github.com/{GITHUB_REPO}/archive/refs/tags/{{tag}}.zip"
+RELEASE_CACHE_TTL = 300
+RELEASE_FAILURE_CACHE_TTL = 60
 
 VERSION_FILENAME = "WHATSBOT_VERSION"
 
@@ -28,44 +35,21 @@ def _get_project_root(settings) -> Path:
     return Path(settings.data_dir)
 
 
+def _version_key(value: str) -> tuple[int, int, int]:
+    numbers = [int(part) for part in re.findall(r"\d+", str(value or ""))[:3]]
+    return tuple((numbers + [0, 0, 0])[:3])
+
+
 POPUP_MARKER_PATH = "storages/update_popup.json"
+_release_cache: dict = {"value": None, "fetched_at": 0.0}
 
 
 def _popup_marker_path(project_root: Path) -> Path:
     return project_root / POPUP_MARKER_PATH
 
 
-def _read_pending_popup_version(project_root: Path) -> str:
-    """Version the "show the what's-new popup" marker is currently armed for.
-
-    Lives under storages/ — gitignored, and one of the PRESERVE_DIRS the
-    self-update's own file copy skips — so it survives a `git pull`, a
-    Coolify/Docker redeploy, and (crucially) a fresh git clone / "Download
-    ZIP" install: none of those ever touch storages/, so none of them can
-    create this file. The ONLY writer is _mark_popup_pending(), called from
-    _perform_update() right after a manual "Atualizar" in the panel. That is
-    what makes the popup installation-scoped to "just self-updated" instead of
-    "code on disk happens to be a version newer than before".
-    """
-    path = _popup_marker_path(project_root)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return str(data.get("version") or "")
-    except Exception:
-        return ""
-
-
-def _mark_popup_pending(project_root: Path, version: str) -> None:
-    """Arm the popup for *version*. Called only by _perform_update()."""
-    path = _popup_marker_path(project_root)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"version": version}) + "\n", encoding="utf-8")
-    except Exception as exc:
-        logger.warning("Failed to write update popup marker: %s", exc)
-
-
 def _clear_popup_pending(project_root: Path) -> None:
+    """Remove the marker used by releases before update notifications existed."""
     path = _popup_marker_path(project_root)
     try:
         path.unlink(missing_ok=True)
@@ -85,10 +69,8 @@ def _read_local_version(project_root: Path) -> dict:
     always reports "0.0.0".
 
     `changelog` is newest-first: `changelog[0]` is always the entry for the
-    installed `version`. `popup_shown` (despite the name, computed here rather
-    than stored in this file) is True — "don't show it" — UNLESS the
-    storages/ popup marker is armed for exactly this `version`, which only
-    happens right after a manual self-update. See _read_pending_popup_version.
+    installed `version`. `popup_shown` remains True only for compatibility
+    with frontend files cached from releases that showed post-update news.
     """
     path = project_root / VERSION_FILENAME
     try:
@@ -99,15 +81,53 @@ def _read_local_version(project_root: Path) -> dict:
             if isinstance(e, dict)
         ]
         version = str(data.get("version") or (changelog[0]["version"] if changelog else "0.0.0"))
-        popup_shown = _read_pending_popup_version(project_root) != version
-        return {"version": version, "changelog": changelog, "popup_shown": popup_shown}
+        return {"version": version, "changelog": changelog, "popup_shown": True}
     except Exception as exc:
         logger.debug("Failed to read %s: %s", VERSION_FILENAME, exc)
         return {"version": "0.0.0", "changelog": [], "popup_shown": True}
 
 
-def _fetch_latest_release() -> dict:
-    """Fetch the latest release's tag + release notes from the GitHub API."""
+def _fetch_release_without_api() -> dict:
+    """Resolve the latest tag and changelog without GitHub API rate limits."""
+    req = urllib.request.Request(GITHUB_LATEST_RELEASE_URL, headers={"User-Agent": "WhatsBot"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        final_url = resp.geturl()
+    tag = urllib.parse.unquote(urllib.parse.urlparse(final_url).path.rstrip("/").rsplit("/", 1)[-1])
+    if not tag or "/" in tag or not tag.startswith("v"):
+        raise RuntimeError("o GitHub não informou a tag da última release")
+
+    description = ""
+    version_url = GITHUB_RAW_VERSION_URL_TEMPLATE.format(tag=urllib.parse.quote(tag, safe=""))
+    try:
+        version_req = urllib.request.Request(version_url, headers={"User-Agent": "WhatsBot"})
+        with urllib.request.urlopen(version_req, timeout=10) as resp:
+            version_data = json.loads(resp.read().decode("utf-8"))
+        version = tag.lstrip("v")
+        entry = next(
+            (item for item in version_data.get("changelog", []) if str(item.get("version")) == version),
+            None,
+        )
+        if entry:
+            description = str(entry.get("description") or "")
+    except Exception as exc:
+        logger.warning("Failed to fetch release changelog from tag %s: %s", tag, exc)
+
+    return {
+        "tag": tag,
+        "version": tag.lstrip("v"),
+        "description": description,
+        "url": final_url,
+    }
+
+
+def _fetch_latest_release(force: bool = False) -> dict:
+    """Fetch and cache the latest release, with a non-API fallback."""
+    now = time.monotonic()
+    cached = _release_cache.get("value")
+    cache_ttl = RELEASE_CACHE_TTL if cached and cached.get("tag") else RELEASE_FAILURE_CACHE_TTL
+    if not force and cached is not None and now - _release_cache["fetched_at"] < cache_ttl:
+        return dict(cached)
+
     try:
         req = urllib.request.Request(
             GITHUB_RELEASES_API,
@@ -116,15 +136,23 @@ def _fetch_latest_release() -> dict:
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             tag = data.get("tag_name", "")
-            return {
+            result = {
                 "tag": tag,
                 "version": tag.lstrip("v"),
                 "description": data.get("body") or "",
                 "url": data.get("html_url", ""),
             }
     except Exception as exc:
-        logger.warning("Failed to fetch latest release: %s", exc)
-        return {"tag": "", "version": "", "description": "", "url": ""}
+        logger.warning("GitHub Releases API unavailable, using public release page: %s", exc)
+        try:
+            result = _fetch_release_without_api()
+        except Exception as fallback_exc:
+            logger.warning("Failed to fetch latest release: %s", fallback_exc)
+            result = {"tag": "", "version": "", "description": "", "url": ""}
+
+    _release_cache["value"] = dict(result)
+    _release_cache["fetched_at"] = now
+    return result
 
 
 def _should_preserve(rel_path: str) -> bool:
@@ -205,10 +233,9 @@ def _perform_update(project_root: Path, tag: str) -> dict:
         # The tag's own WHATSBOT_VERSION file was just copied in above, so this
         # already reflects the new version + its changelog history.
         info = _read_local_version(project_root)
-        # Arm the what's-new popup for this version — the only place this
-        # happens, which is what scopes the popup to "manually updated via
-        # the panel" instead of "code on disk changed somehow".
-        _mark_popup_pending(project_root, info["version"])
+        # Releases before v0.2.4 left a marker for a post-update popup. The
+        # current flow announces available releases before installation.
+        _clear_popup_pending(project_root)
         logger.info("Update applied: %d files updated. New version: %s", copied, info["version"])
         return {
             "version": info["version"],
@@ -222,17 +249,26 @@ def register_routes(app, deps):
     settings = deps.settings
 
     @app.get("/api/update/check")
-    async def check_update():
+    async def check_update(force: bool = False):
         project_root = _get_project_root(settings)
         current = await asyncio.to_thread(_read_local_version, project_root)
-        latest = await asyncio.to_thread(_fetch_latest_release)
-        has_update = bool(latest["version"] and latest["version"] != current["version"])
+        latest = await asyncio.to_thread(_fetch_latest_release, force)
+        has_update = bool(
+            latest["version"] and _version_key(latest["version"]) > _version_key(current["version"])
+        )
+        notifications_enabled = bool(settings.get("whatsbot_update_notifications_enabled", True))
+        skipped_version = str(settings.get("whatsbot_skipped_version", "") or "")
         return _ok({
             "current_version": current["version"],
             "latest_version": latest["version"],
             "latest_description": latest["description"],
             "release_url": latest["url"],
             "update_available": has_update,
+            "notifications_enabled": notifications_enabled,
+            "skipped_version": skipped_version,
+            "should_notify": bool(
+                has_update and notifications_enabled and latest["version"] != skipped_version
+            ),
         })
 
     @app.get("/api/update/local-version")
@@ -247,12 +283,20 @@ def register_routes(app, deps):
 
     @app.post("/api/update/popup-seen")
     async def mark_popup_seen():
-        # Clears the storages/ popup marker so the "what's new" popup isn't
-        # shown again for this installation (not per browser/device).
+        # Backward compatibility for a cached frontend from an older release.
         project_root = _get_project_root(settings)
         await asyncio.to_thread(_clear_popup_pending, project_root)
         info = await asyncio.to_thread(_read_local_version, project_root)
         return _ok(info)
+
+    @app.post("/api/update/skip-version")
+    async def skip_version(body: dict):
+        version = str(body.get("version") or "").strip().lstrip("v")
+        if not version or len(version) > 50 or any(char in version for char in "/\\\r\n"):
+            return _err("versão inválida", 400)
+        settings["whatsbot_skipped_version"] = version
+        settings.save()
+        return _ok({"skipped_version": version})
 
     @app.post("/api/update")
     async def apply_update():

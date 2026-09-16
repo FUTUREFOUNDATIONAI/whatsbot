@@ -1,0 +1,216 @@
+# Base oficial de ajuda do WhatsBot
+
+Esta é a fonte principal para orientar quem usa o WhatsBot. Os links usam `{{base_url}}`, que é substituído automaticamente pelo domínio ou pelo endereço local aberto pela pessoa.
+
+Ao responder:
+
+- Dê uma orientação curta, em linguagem comum.
+- Inclua somente o link mais específico para a ação solicitada.
+- Não liste configurações que a pessoa não perguntou.
+- Se esta base não cobrir a dúvida, consulte as referências do sistema antes de responder.
+- Se a interface ou o comportamento encontrado nas referências divergir desta base, siga a versão atual do sistema e explique o caminho correto.
+
+## Conversas e painel principal
+
+### Conversas do WhatsApp
+
+O painel principal mostra as conversas, mensagens, contatos e o estado da conexão com o WhatsApp. É nele que a pessoa acompanha e responde os atendimentos.
+
+[Abrir painel principal]({{base_url}}/painel)
+
+### Ativar ou interromper respostas automáticas
+
+Em **Painel → Configurações → Automação**, use **Respostas automáticas**. Quando estiver desativado, o WhatsBot continua recebendo as conversas, mas não responde automaticamente.
+
+[Abrir respostas automáticas]({{base_url}}/painel#auto-reply)
+
+### Escolher se novos contatos começam com IA
+
+Em **Painel → Configurações → Automação**, altere **IA padrão para novos contatos**. A mudança vale para contatos que chegarem depois dela; cada conversa também pode ter seu próprio estado de IA.
+
+[Abrir IA para novos contatos]({{base_url}}/painel#default-ai)
+
+### Respostas em grupos
+
+Em **Painel → Configurações → Automação**, escolha se a IA responde sempre, somente quando for mencionada ou nunca. A opção vale para grupos que estejam com a IA ativada.
+
+[Abrir respostas em grupos]({{base_url}}/painel#groups)
+
+## IA, modelos e instruções
+
+### Alterar as instruções, o prompt ou a personalidade do agente
+
+Em **Painel → Configurações → Comportamento da IA**, edite **Instruções do agente** e salve. Esse texto define como a IA deve falar e agir nas conversas.
+
+[Abrir instruções do agente]({{base_url}}/painel#prompt)
+
+### Alterar a chave de API
+
+Em **Painel → Configurações → API e Modelos**, altere a chave usada pelo serviço de IA e salve.
+
+[Abrir chave de API]({{base_url}}/painel#api-key)
+
+### Alterar o modelo de IA
+
+Em **Painel → Configurações → API e Modelos**, escolha o modelo principal. Ele será usado nas respostas das conversas e no Chat.
+
+[Abrir modelo de IA]({{base_url}}/painel#model)
+
+### Alterar o modelo de melhoria
+
+Em **Painel → Configurações → API e Modelos**, escolha o modelo usado para analisar respostas marcadas como incorretas. Se ficar vazio, o WhatsBot usa o modelo principal.
+
+[Abrir modelo de melhoria]({{base_url}}/painel#improvement-model)
+
+### Alterar quantas mensagens entram no contexto
+
+Em **Painel → Configurações → Comportamento**, altere **Mensagens de contexto**. Um número maior dá mais histórico à IA, mas pode aumentar o uso de tokens.
+
+[Abrir mensagens de contexto]({{base_url}}/painel#context)
+
+### Agrupar mensagens enviadas em sequência
+
+Em **Painel → Configurações → Comportamento**, altere o tempo de **Agrupamento de mensagens**. Durante esse intervalo, mensagens seguidas da mesma pessoa são reunidas antes da resposta.
+
+[Abrir agrupamento de mensagens]({{base_url}}/painel#batch)
+
+### Dividir uma resposta em várias mensagens
+
+Em **Painel → Configurações → Comportamento**, ative ou desative **Dividir respostas** e ajuste o intervalo entre as partes.
+
+[Abrir divisão das respostas]({{base_url}}/painel#split-messages)
+
+## Áudios, imagens e documentos
+
+### Parar ou configurar a leitura de documentos
+
+Em **Painel → Configurações → API e Modelos**, desative **Leitura de documentos** para o WhatsBot deixar de extrair o conteúdo de PDFs e outros documentos recebidos.
+
+[Abrir leitura de documentos]({{base_url}}/painel#document-transcription)
+
+### Parar ou configurar a descrição de imagens
+
+Em **Painel → Configurações → API e Modelos**, desative **Descrição de imagens** para a IA deixar de analisar automaticamente as imagens recebidas.
+
+[Abrir descrição de imagens]({{base_url}}/painel#image-transcription)
+
+### Configurar a transcrição de áudios recebidos
+
+Em **Painel → Configurações → API e Modelos**, escolha o modo de **Transcrição de áudio**, onde ela aparece e, quando disponível, o texto colocado antes da transcrição.
+
+[Abrir transcrição de áudio]({{base_url}}/painel#audio-transcription)
+
+### Gravar áudio dentro do Chat
+
+No Chat, use o botão de microfone ao lado do campo de mensagem. É possível cancelar a gravação ou parar; ao parar, o áudio é transcrito e a transcrição é enviada como mensagem.
+
+[Abrir Chat]({{base_url}}/chat)
+
+## Atendimento e avisos
+
+### Aviso de transferência para uma pessoa
+
+Em **Painel → Configurações → Comportamento**, configure o alerta mostrado quando a ferramenta de transferência para atendimento humano for usada.
+
+[Abrir alerta de transferência]({{base_url}}/painel#transfer-alert)
+
+### Aviso de saldo baixo
+
+Em **Painel → Configurações → Comportamento**, ative ou desative o aviso de saldo baixo e defina o valor que dispara o alerta.
+
+[Abrir aviso de saldo baixo]({{base_url}}/painel#low-balance)
+
+### Marcar conversas como lidas ou não lidas
+
+Em **Painel → Configurações → Comportamento**, use **Marcar conversas** para marcar todas como lidas ou todas como não lidas. Para mudar somente uma conversa, clique com o botão direito sobre o contato na lista.
+
+[Abrir estado de leitura]({{base_url}}/painel#mark-conversations)
+
+## Custos e diagnóstico
+
+### Ver tokens, cache e valores gastos
+
+A página **Custos** mostra o consumo e os valores estimados das chamadas de IA. No Chat, o resumo de tokens, cache, custo da resposta e total da conversa aparece quando a execução termina.
+
+[Abrir custos de IA]({{base_url}}/costs)
+
+### Ver o que aconteceu durante uma resposta
+
+A página **Execuções** mostra as execuções e permite abrir os detalhes usados para diagnosticar um atendimento.
+
+[Abrir execuções]({{base_url}}/executions)
+
+### Ativar ou desativar ferramentas da IA
+
+A página **Ferramentas** lista as ações disponíveis para a IA e permite controlar quais podem ser usadas.
+
+[Abrir ferramentas]({{base_url}}/tools)
+
+### Alterar quantas execuções ficam guardadas
+
+Em **Painel → Configurações → Avançado**, altere **Limite de execuções salvas**.
+
+[Abrir limite de execuções]({{base_url}}/painel#max-executions)
+
+## Chat e projetos de plugin
+
+### Usar a ajuda do sistema
+
+Abra o **Chat** e use o projeto **WhatsBot — Ajuda do sistema** para perguntar como usar ou configurar o WhatsBot. Cada conversa possui seu próprio link.
+
+[Abrir Chat]({{base_url}}/chat)
+
+### Criar ou alterar um plugin
+
+A ajuda do sistema não cria plugins. No **Chat**, clique no botão **+** no topo da barra lateral esquerda, crie um projeto e descreva com suas palavras o que o plugin deve fazer. Se houver poucos detalhes, o criador fará perguntas curtas antes de começar.
+
+[Abrir criador de plugins]({{base_url}}/chat)
+
+### Instalar, configurar ou consultar plugins
+
+A página **Plugins** lista os plugins instalados. Nela é possível importar um arquivo de plugin, ativar, desativar, configurar, exportar ou remover um plugin. As opções exatas dependem de cada plugin.
+
+[Abrir plugins]({{base_url}}/plugins)
+
+### Organizar projetos e conversas do Chat
+
+No Chat, projetos podem ser renomeados, removidos da lista e arrastados para mudar de posição. Remover um projeto é uma exclusão lógica e não apaga os arquivos nem o plugin. Conversas podem ser renomeadas ou apagadas separadamente, e um projeto aberto pode ser recolhido sem abrir outro.
+
+[Abrir Chat]({{base_url}}/chat)
+
+## Segurança, dados e atualizações
+
+### Criar, trocar ou remover a senha do painel
+
+Em **Painel → Configurações → Avançado**, use **Senha do painel**. Sem uma senha configurada, qualquer pessoa que alcançar o endereço do WhatsBot poderá abrir o painel.
+
+[Abrir senha do painel]({{base_url}}/painel#password)
+
+### Configurar ou migrar o banco de dados
+
+Em **Painel → Configurações → Banco de dados**, consulte o banco em uso ou informe uma conexão PostgreSQL e execute a migração disponível na tela.
+
+[Abrir banco de dados]({{base_url}}/painel#database)
+
+### Atualizar o WhatsBot
+
+Quando uma nova versão estiver disponível, o WhatsBot mostra um aviso ao abrir ou atualizar a página. Nele é possível atualizar agora, ignorar somente aquela versão ou nunca receber avisos. Se uma versão for ignorada, a próxima volta a ser avisada. Para reativar ou desligar os avisos, abra **Painel → Configurações → Avançado → Atualizar WhatsBot**. Quando uma atualização é aplicada, o WhatsBot reinicia automaticamente para carregar a nova versão.
+
+[Abrir atualizações]({{base_url}}/painel#update)
+
+### Configurar ou atualizar o motor do WhatsApp
+
+Em **Painel → Configurações → GOWA**, consulte a versão, atualização e opções de conexão do motor responsável pelo WhatsApp.
+
+[Abrir GOWA]({{base_url}}/painel#gowa)
+
+## Quando esta base não tiver a resposta
+
+Pesquise nesta ordem:
+
+1. A interface e as rotas atuais do WhatsBot.
+2. A documentação e o código diretamente relacionados à dúvida.
+3. O manifesto e o código dos plugins instalados, quando a dúvida envolver um plugin.
+4. A estrutura e as migrations do banco, quando forem necessárias para confirmar o comportamento.
+
+Não leia nem revele registros de conversas, contatos, credenciais ou outros dados privados. Depois da pesquisa, traduza a descoberta para passos simples e inclua o link direto disponível.

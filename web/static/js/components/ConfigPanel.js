@@ -41,6 +41,7 @@ export function ConfigPanel({ config, saving, onSave, onNotify }) {
   const [lowBalanceEnabled, setLowBalanceEnabled] = useState(true);
   const [lowBalanceThreshold, setLowBalanceThreshold] = useState(0.5);
   const [gowaAutoCheck, setGowaAutoCheck] = useState(true);
+  const [updateNotificationsEnabled, setUpdateNotificationsEnabled] = useState(true);
   const [maxExecutions, setMaxExecutions] = useState(200);
   const [confirmUnreadAll, setConfirmUnreadAll] = useState(false);
   const [markingAllUnread, setMarkingAllUnread] = useState(false);
@@ -66,10 +67,10 @@ export function ConfigPanel({ config, saving, onSave, onNotify }) {
     fetchVersionInfo();
   }, []);
 
-  async function fetchVersionInfo() {
+  async function fetchVersionInfo(force = false) {
     setCheckingUpdate(true);
     try {
-      const res = await checkForUpdates();
+      const res = await checkForUpdates(force);
       if (res.ok) {
         setCurrentVersion(res.data.current_version || '');
         setLatestVersion(res.data.latest_version || '');
@@ -101,6 +102,7 @@ export function ConfigPanel({ config, saving, onSave, onNotify }) {
       setLowBalanceEnabled(config.low_balance_enabled ?? true);
       setLowBalanceThreshold(config.low_balance_threshold ?? 0.5);
       setGowaAutoCheck(config.gowa_auto_check_enabled ?? true);
+      setUpdateNotificationsEnabled(config.whatsbot_update_notifications_enabled ?? true);
       setMaxExecutions(config.max_executions ?? 200);
       setDefaultAiEnabled(config.default_ai_enabled ?? true);
       setGroupReplyMode(config.group_reply_mode ?? 'mention_only');
@@ -222,6 +224,7 @@ export function ConfigPanel({ config, saving, onSave, onNotify }) {
       low_balance_enabled: lowBalanceEnabled,
       low_balance_threshold: isNaN(parseFloat(lowBalanceThreshold)) ? 0.5 : parseFloat(lowBalanceThreshold),
       gowa_auto_check_enabled: gowaAutoCheck,
+      whatsbot_update_notifications_enabled: updateNotificationsEnabled,
       max_executions: parseInt(maxExecutions, 10) || 200,
       default_ai_enabled: defaultAiEnabled,
       group_reply_mode: groupReplyMode,
@@ -735,7 +738,7 @@ export function ConfigPanel({ config, saving, onSave, onNotify }) {
 
         <!-- Update -->
         <div id="update" class="p-3 bg-wa-panel rounded-lg border border-wa-border scroll-mt-4">
-          <div class="flex items-center justify-between">
+          <div class="flex items-start justify-between gap-4">
             <div>
               <label class="text-sm font-semibold text-wa-text">Atualizar WhatsBot</label>
               <div class="flex items-center gap-3 mt-1.5">
@@ -754,10 +757,22 @@ export function ConfigPanel({ config, saving, onSave, onNotify }) {
                   <span class="text-xs text-blue-600 font-medium">Nova versão disponível</span>
                 ` : null}
               </div>
+              <label class="flex items-start gap-2 mt-3 text-xs text-wa-text cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked=${updateNotificationsEnabled}
+                  onChange=${(e) => setUpdateNotificationsEnabled(e.target.checked)}
+                  class="w-4 h-4 mt-0.5 rounded border-wa-border accent-wa-teal"
+                />
+                <span>
+                  Avisar quando houver uma nova versão
+                  <span class="block text-wa-secondary mt-0.5">Se estiver desligado, as atualizações ainda podem ser verificadas manualmente.</span>
+                </span>
+              </label>
             </div>
             <div class="flex items-center gap-2 ml-4">
               <button
-                onClick=${fetchVersionInfo}
+                onClick=${() => fetchVersionInfo(true)}
                 disabled=${checkingUpdate || updating}
                 class="px-3 py-2 bg-wa-panel hover:bg-wa-hover disabled:opacity-50 text-wa-text text-sm rounded-lg transition-colors"
                 title="Verificar atualizações"

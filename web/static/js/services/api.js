@@ -359,8 +359,8 @@ export async function getUsageContactDetail(phone, params = {}) {
 
 // ── Update ────────────────────────────────────────────────────────
 
-export async function checkForUpdates() {
-  return request('GET', '/api/update/check');
+export async function checkForUpdates(force = false) {
+  return request('GET', `/api/update/check${force ? '?force=true' : ''}`);
 }
 
 export async function getLocalVersionInfo() {
@@ -369,6 +369,10 @@ export async function getLocalVersionInfo() {
 
 export async function performUpdate() {
   return request('POST', '/api/update');
+}
+
+export async function skipWhatsBotVersion(version) {
+  return request('POST', '/api/update/skip-version', { version });
 }
 
 export async function markUpdatePopupSeen() {

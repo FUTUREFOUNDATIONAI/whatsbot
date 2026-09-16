@@ -144,6 +144,11 @@ DEFAULT_CONFIG = {
     # Cached structured verdict for the installed→latest release interval.
     # It contains public release evidence only; no API key or user content.
     "gowa_release_assessment_cache": {},
+    # --- Avisos de atualização do WhatsBot --------------------------------
+    # Ignorar vale somente para uma release; o próximo número volta a avisar.
+    # O toggle desliga todos os avisos até ser reativado no painel.
+    "whatsbot_update_notifications_enabled": True,
+    "whatsbot_skipped_version": "",
     # --- Proxy de saída do GOWA ---------------------------------------------
     # Roteia a conexão do WhatsApp (WebSocket do whatsmeow) por um proxy.
     # Requer GOWA >= 8.11.0. ``gowa_proxy_mode`` escolhe entre preencher os
