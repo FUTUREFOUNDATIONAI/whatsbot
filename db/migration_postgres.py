@@ -99,26 +99,69 @@ def _ensure_target_empty(engine: Engine) -> None:
         raise TargetNotEmptyError(conflicts)
 
 
+def _resolve_target_schema(engine: Engine) -> str:
+    """The schema this connection actually reads and writes.
+
+    Derived from ``current_schema()`` — the first existing entry of the
+    connection's ``search_path`` — because that is precisely what
+    ``inspect().get_table_names()`` looks at in :func:`_list_conflicts`.
+    Resolving it once and using it in BOTH places is the whole point: if the
+    emptiness check and the drop target different schemas, the check is
+    worthless and the drop is a loaded gun pointed somewhere else.
+    """
+    with engine.connect() as conn:
+        schema = conn.execute(sa_text("SELECT current_schema()")).scalar()
+    if not schema:
+        raise RuntimeError(
+            "Could not resolve the target schema: current_schema() returned "
+            "NULL, meaning the connection's search_path names nothing that "
+            "exists. Refusing to guess which schema to drop."
+        )
+    return str(schema)
+
+
 def _drop_target_schema(engine: Engine) -> None:
-    """Wipe the target's ``public`` schema. **DESTRUCTIVE** — drops every table.
+    """Wipe the target's OWN schema. **DESTRUCTIVE** — drops every table in it.
 
     Postgres-only: SQLite never reaches this code path because the migration
     targets a Postgres URL by construction. The schema is re-created and
     permissions restored so the subsequent Alembic upgrade can write.
+
+    The schema is resolved from the connection, never hardcoded. It used to be
+    the literal ``public``, which was correct only while every deployment was
+    one-database-per-tenant. Once tenants became SCHEMAS inside one shared
+    database (``search_path=ff_<tenant>``), that literal meant a ``force_drop``
+    on any tenant would drop ``public`` — a schema shared with every other
+    tenant in the project — while leaving the tenant's own tables untouched.
+    Wrong target and wrong outcome from a single hardcoded identifier.
     """
     if engine.dialect.name != "postgresql":
         raise RuntimeError(
             "force_drop only supported for Postgres targets "
             f"(got dialect '{engine.dialect.name}')"
         )
+
+    schema = _resolve_target_schema(engine)
+    quoted = engine.dialect.identifier_preparer.quote_schema(schema)
+    logger.warning(
+        "force_drop: dropping and recreating schema %r (resolved from "
+        "search_path, not assumed)",
+        schema,
+    )
+
     with engine.begin() as conn:
-        conn.execute(sa_text("DROP SCHEMA IF EXISTS public CASCADE"))
-        conn.execute(sa_text("CREATE SCHEMA public"))
+        conn.execute(sa_text(f"DROP SCHEMA IF EXISTS {quoted} CASCADE"))
+        conn.execute(sa_text(f"CREATE SCHEMA {quoted}"))
         # Keep behavior compatible with default Postgres installs where the
         # connecting role owns the schema; on managed services (Neon, RDS) the
         # owner is usually the role we logged in with anyway.
-        conn.execute(sa_text("GRANT ALL ON SCHEMA public TO CURRENT_USER"))
-        conn.execute(sa_text("GRANT ALL ON SCHEMA public TO public"))
+        conn.execute(sa_text(f"GRANT ALL ON SCHEMA {quoted} TO CURRENT_USER"))
+        # Granting to the PUBLIC role only makes sense for the legacy
+        # single-tenant layout. On a per-tenant schema it would hand every role
+        # in the database access to that tenant's data — the opposite of why
+        # the tenants were split into schemas in the first place.
+        if schema == "public":
+            conn.execute(sa_text("GRANT ALL ON SCHEMA public TO public"))
 
 
 def _apply_alembic_to_target(engine: Engine) -> None:
@@ -292,9 +335,10 @@ def migrate_sqlite_to_postgres(
         target_url: SQLAlchemy URL of the destination Postgres.
         on_progress: Callback receiving ``MigrationProgress`` snapshots — emitted
             on every meaningful state change so the UI can stream progress.
-        force_drop: If ``True``, ``DROP SCHEMA public CASCADE`` runs against the
-            target before the schema is applied. **DESTRUCTIVE** — every table
-            in the destination disappears. The caller is responsible for the
+        force_drop: If ``True``, the target's own schema — resolved from the
+            connection's ``search_path``, never hardcoded — is dropped and
+            recreated before the schema is applied. **DESTRUCTIVE** — every
+            table in that schema disappears. The caller is responsible for the
             explicit user confirmation.
 
     Every failure path emits ``stage="failed"`` and a message before returning,
