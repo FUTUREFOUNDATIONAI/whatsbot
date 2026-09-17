@@ -6,7 +6,7 @@ import time
 
 from sqlalchemy import and_, func, insert as sa_insert, select
 
-from db.engine import get_engine
+from db.engine import get_engine, read_connect
 from db.tables import contacts, usage
 
 
@@ -51,7 +51,7 @@ def summary(contact_id: int, start_ts: float | None = None,
             end_ts: float | None = None) -> dict:
     """Return aggregated usage stats for a single contact."""
     where_clauses = [usage.c.contact_id == contact_id, *_time_clauses(start_ts, end_ts)]
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         totals_row = conn.execute(
             select(*_aggregate_columns()).where(and_(*where_clauses))
         ).mappings().first()
@@ -84,7 +84,7 @@ def global_summary(start_ts: float | None = None,
                    end_ts: float | None = None) -> dict:
     """Return aggregated usage stats across ALL contacts."""
     time_clauses = _time_clauses(start_ts, end_ts)
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         totals_stmt = select(*_aggregate_columns())
         by_type_stmt = (
             select(usage.c.call_type, *_aggregate_columns()).group_by(usage.c.call_type)
@@ -135,7 +135,7 @@ def by_contact(start_ts: float | None = None,
         base_stmt = base_stmt.where(and_(*time_clauses))
 
     results: list[dict] = []
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(base_stmt).mappings().all()
         for row in rows:
             cid = row["contact_id"]
@@ -171,7 +171,7 @@ def detail(contact_id: int, start_ts: float | None = None,
            end_ts: float | None = None) -> list[dict]:
     """Return raw usage records for a specific contact."""
     where_clauses = [usage.c.contact_id == contact_id, *_time_clauses(start_ts, end_ts)]
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(
             select(
                 usage.c.call_type, usage.c.model, usage.c.prompt_tokens,

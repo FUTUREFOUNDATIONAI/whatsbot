@@ -7,7 +7,7 @@ import json
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 
-from db.engine import get_engine
+from db.engine import get_engine, read_connect
 from db.tables import config
 from db.upsert import upsert
 
@@ -21,14 +21,14 @@ def _decode(value):
 
 def get_all() -> dict:
     """Return all config key-value pairs as a dict (values JSON-decoded)."""
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(select(config.c.key, config.c.value)).all()
     return {row.key: _decode(row.value) for row in rows}
 
 
 def get(key: str, default=None):
     """Get a single config value by key."""
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         value = conn.execute(
             select(config.c.value).where(config.c.key == key)
         ).scalar_one_or_none()

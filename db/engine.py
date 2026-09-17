@@ -160,6 +160,23 @@ def get_engine() -> Engine:
     return _engine
 
 
+def read_connect():
+    """Open a connection for read-only work, in AUTOCOMMIT.
+
+    SQLAlchemy starts an implicit transaction on the first statement inside a
+    ``connect()`` block and rolls it back when the block closes. For a lone
+    SELECT that is a BEGIN and a ROLLBACK round trip spent on nothing —
+    measured at roughly 950k pairs a day against the Supabase pooler, which
+    charges for every one of them. AUTOCOMMIT skips both.
+
+    Use only for statements that do not write. Writes keep
+    ``get_engine().begin()``: several of them (``increment_unread``,
+    ``mark_as_read``) depend on real transactional atomicity, so the engine
+    default deliberately stays transactional rather than flipping globally.
+    """
+    return get_engine().connect().execution_options(isolation_level="AUTOCOMMIT")
+
+
 def get_database_url() -> str:
     """Return the URL the engine is bound to."""
     if _db_url is None:

@@ -7,7 +7,7 @@ import time
 
 from sqlalchemy import and_, delete as sa_delete, insert as sa_insert, select, update as sa_update
 
-from db.engine import get_engine
+from db.engine import get_engine, read_connect
 from db.tables import messages
 
 
@@ -46,7 +46,7 @@ def add(contact_id: int, role: str, content: str, *,
 
 def get_all(contact_id: int) -> list[dict]:
     """Return all messages for a contact ordered by timestamp."""
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(
             select(messages)
             .where(messages.c.contact_id == contact_id)
@@ -61,7 +61,7 @@ def get_context(contact_id: int, limit: int) -> list[dict]:
     # something happened but are NOT meant for the AI to read. Kept out of the
     # LLM context here so they never leak into a reply.
     excluded = ("transcription", "tool_call", "system_notice", "system")
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(
             select(messages)
             .where(
@@ -77,7 +77,7 @@ def get_context(contact_id: int, limit: int) -> list[dict]:
 
 def get_last(contact_id: int) -> dict | None:
     """Return the most recent message for a contact."""
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         row = conn.execute(
             select(messages)
             .where(messages.c.contact_id == contact_id)
@@ -89,7 +89,7 @@ def get_last(contact_id: int) -> dict | None:
 
 def get_last_user_message(contact_id: int) -> dict | None:
     """Return the most recent user message (for updating with transcription etc)."""
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         row = conn.execute(
             select(messages)
             .where((messages.c.contact_id == contact_id) & (messages.c.role == "user"))
@@ -184,7 +184,7 @@ def update_status_by_msg_id(msg_id: str, new_status: str) -> list[str]:
 
 def get_contact_id_by_msg_id(msg_id: str) -> int | None:
     """Look up the contact_id for a given GOWA msg_id."""
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         cid = conn.execute(
             select(messages.c.contact_id).where(messages.c.msg_id == msg_id).limit(1)
         ).scalar_one_or_none()
