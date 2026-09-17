@@ -8,7 +8,7 @@ import uuid
 
 from sqlalchemy import delete, func, insert, select, update
 
-from db.engine import get_engine
+from db.engine import get_engine, read_connect
 from db.tables import chat_conversations, chat_messages, chat_projects
 
 
@@ -21,13 +21,13 @@ def list_projects(*, include_deleted: bool = False) -> list[dict]:
     if not include_deleted:
         stmt = stmt.where(chat_projects.c.deleted_at.is_(None))
     stmt = stmt.order_by(chat_projects.c.sort_order, chat_projects.c.created_at)
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(stmt).mappings().all()
     return [dict(r) for r in rows]
 
 
 def get_project(project_id: str) -> dict | None:
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         row = conn.execute(select(chat_projects).where(chat_projects.c.id == project_id)).mappings().first()
     return _dict(row)
 
@@ -36,13 +36,13 @@ def get_project_by_plugin(plugin_id: str, *, include_deleted: bool = False) -> d
     stmt = select(chat_projects).where(chat_projects.c.plugin_id == plugin_id)
     if not include_deleted:
         stmt = stmt.where(chat_projects.c.deleted_at.is_(None))
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         row = conn.execute(stmt).mappings().first()
     return _dict(row)
 
 
 def ensure_system_project() -> dict:
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         row = conn.execute(
             select(chat_projects).where(
                 chat_projects.c.kind == "system", chat_projects.c.deleted_at.is_(None)
@@ -90,7 +90,7 @@ def soft_delete_project(project_id: str) -> None:
 
 
 def list_conversations(project_id: str) -> list[dict]:
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(
             select(chat_conversations)
             .where(chat_conversations.c.project_id == project_id)
@@ -113,7 +113,7 @@ def create_conversation(project_id: str, model: str, reasoning: str = "") -> dic
 
 
 def get_conversation(conversation_id: str) -> dict | None:
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         row = conn.execute(
             select(chat_conversations).where(chat_conversations.c.id == conversation_id)
         ).mappings().first()
@@ -171,7 +171,7 @@ def list_messages(conversation_id: str, *, after_id: int | None = None) -> list[
     if after_id is not None:
         stmt = stmt.where(chat_messages.c.id > after_id)
     stmt = stmt.order_by(chat_messages.c.id)
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(stmt).mappings().all()
     out = []
     for row in rows:

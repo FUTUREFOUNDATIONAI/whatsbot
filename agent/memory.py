@@ -149,9 +149,9 @@ class ContactMemory:
         """Return unread message IDs from the database."""
         from sqlalchemy import select
 
-        from db.engine import get_engine
+        from db.engine import read_connect
         from db.tables import unread_msg_ids
-        with get_engine().connect() as conn:
+        with read_connect() as conn:
             rows = conn.execute(
                 select(unread_msg_ids.c.msg_id).where(unread_msg_ids.c.contact_id == self.id)
             ).all()

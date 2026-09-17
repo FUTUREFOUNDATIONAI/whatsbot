@@ -12,7 +12,7 @@ from sqlalchemy import insert as sa_insert
 from sqlalchemy import select
 from sqlalchemy import update as sa_update
 
-from db.engine import get_engine
+from db.engine import get_engine, read_connect
 from db.tables import contact_tags, contacts, observations, tags, unread_msg_ids
 
 
@@ -112,7 +112,7 @@ def set_pinned(contact_id: int, pinned: bool) -> None:
 def get_by_phone(phone: str) -> dict | None:
     """Get a contact by phone number. Checks BR phone variants."""
     variants = _br_phone_variants(phone)
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         row = conn.execute(
             select(contacts).where(contacts.c.phone.in_(variants))
         ).mappings().first()
@@ -171,7 +171,7 @@ def unread_conversation_count() -> int:
     """Number of non-archived conversations that have unread messages — used for the
     browser-tab badge (e.g. "(3) WhatsBot"). Counts a conversation once regardless of
     how many messages are unread, mirroring the sidebar badge visibility."""
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         return conn.execute(
             select(func.count()).select_from(contacts).where(
                 (contacts.c.is_archived == 0)
@@ -253,9 +253,32 @@ def mark_user_messages_as_read(contact_id: int) -> list[str]:
     return msg_ids
 
 
+def match_unread_msg_ids(msg_ids: list[str]) -> dict[int, list[str]]:
+    """Map contact_id -> which of ``msg_ids`` are still unread, in ONE query.
+
+    The webhook receives a handful of ids per read receipt and needs to know
+    which contacts they belong to. Asking contact by contact meant one query
+    per contact in memory, each returning that contact's ENTIRE unread list
+    just to intersect it in Python: 61k queries and 1.1M rows a day, measured
+    on the Supabase pg_stat_statements. Filtering by msg_id server-side turns
+    that into one query returning at most ``len(msg_ids)`` rows.
+    """
+    if not msg_ids:
+        return {}
+    with read_connect() as conn:
+        rows = conn.execute(
+            select(unread_msg_ids.c.contact_id, unread_msg_ids.c.msg_id)
+            .where(unread_msg_ids.c.msg_id.in_(msg_ids))
+        ).all()
+    matched: dict[int, list[str]] = {}
+    for row in rows:
+        matched.setdefault(row.contact_id, []).append(row.msg_id)
+    return matched
+
+
 def get_observations(contact_id: int) -> list[str]:
     """Return all observations for a contact."""
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(
             select(observations.c.text)
             .where(observations.c.contact_id == contact_id)
@@ -346,7 +369,7 @@ def _contact_ids_matching_message(folded_q: str, archived: bool) -> dict[int, di
         ORDER BY m.ts DESC
     """)
     matched: dict[int, dict] = {}
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         for row in conn.execute(sql, {"archived": 1 if archived else 0}).mappings():
             cid = row["contact_id"]
             if cid in matched:
@@ -388,18 +411,24 @@ def list_contacts(q: str = "", archived: bool = False) -> list[dict]:
         ORDER BY c.is_pinned DESC, COALESCE(lm.ts, c.updated_at) DESC
     """)
 
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(sql, {"archived": 1 if archived else 0}).mappings().all()
+
+        # Tags de todos os contatos numa query só. Uma por contato dentro do
+        # laço custava ~29 mil queries/dia para devolver ~120 linhas no total.
+        tags_by_contact: dict[int, list[str]] = {}
+        if rows:
+            for tag_row in conn.execute(
+                select(contact_tags.c.contact_id, tags.c.name)
+                .join(tags, tags.c.id == contact_tags.c.tag_id)
+                .where(contact_tags.c.contact_id.in_([r["id"] for r in rows]))
+            ).all():
+                tags_by_contact.setdefault(tag_row.contact_id, []).append(tag_row.name)
 
         results = []
         for row in rows:
             contact_id = row["id"]
-            tag_rows = conn.execute(
-                select(tags.c.name)
-                .join(contact_tags, contact_tags.c.tag_id == tags.c.id)
-                .where(contact_tags.c.contact_id == contact_id)
-            ).all()
-            tags_list = [t.name for t in tag_rows]
+            tags_list = tags_by_contact.get(contact_id, [])
 
             last_content = ""
             lmt = row["last_msg_media_type"]
@@ -466,7 +495,7 @@ def list_contacts(q: str = "", archived: bool = False) -> list[dict]:
 def get_full_contact(phone: str) -> dict | None:
     """Get full contact data for API response (contact + info + observations)."""
     variants = _br_phone_variants(phone)
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         row = conn.execute(
             select(contacts).where(contacts.c.phone.in_(variants))
         ).mappings().first()

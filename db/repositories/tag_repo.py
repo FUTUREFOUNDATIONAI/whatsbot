@@ -7,14 +7,14 @@ from sqlalchemy import insert as sa_insert
 from sqlalchemy import select
 from sqlalchemy import update as sa_update
 
-from db.engine import get_engine
+from db.engine import get_engine, read_connect
 from db.tables import contact_tags, tags
 from db.upsert import upsert_ignore
 
 
 def get_all() -> dict[str, dict]:
     """Return all tags as {name: {color: ...}} dict (matching old TagRegistry format)."""
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(
             select(tags.c.name, tags.c.color).order_by(tags.c.name)
         ).all()
@@ -23,7 +23,7 @@ def get_all() -> dict[str, dict]:
 
 def get_by_name(name: str) -> dict | None:
     """Get a tag by name. Returns {id, name, color} or None."""
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         row = conn.execute(select(tags).where(tags.c.name == name)).mappings().first()
     return dict(row) if row else None
 
@@ -70,7 +70,7 @@ def delete(name: str) -> bool:
 
 def get_contact_tags(contact_id: int) -> list[str]:
     """Return tag names for a contact."""
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(
             select(tags.c.name)
             .join(contact_tags, contact_tags.c.tag_id == tags.c.id)

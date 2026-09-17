@@ -18,7 +18,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 from sqlalchemy import update as sa_update
 
-from db.engine import get_engine
+from db.engine import get_engine, read_connect
 from db.tables import tool_overrides
 from db.upsert import upsert as upsert_stmt
 
@@ -27,7 +27,7 @@ _UNSET = object()
 
 
 def get(name: str) -> dict | None:
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         row = conn.execute(
             select(tool_overrides).where(tool_overrides.c.name == name)
         ).mappings().first()
@@ -37,7 +37,7 @@ def get(name: str) -> dict | None:
 def list_all() -> list[dict]:
     # Mirror the original ORDER BY: plugin tools (non-null plugin_id) sort after
     # core tools, then by plugin_id, then by name.
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(
             select(tool_overrides).order_by(
                 (tool_overrides.c.plugin_id.is_not(None)),

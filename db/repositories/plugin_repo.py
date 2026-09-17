@@ -12,7 +12,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import inspect, insert as sa_insert, select, text as sa_text
 from sqlalchemy import update as sa_update
 
-from db.engine import get_engine
+from db.engine import get_engine, read_connect
 from db.tables import plugin_migrations, plugins
 from db.upsert import upsert_ignore
 
@@ -40,13 +40,13 @@ def _row_to_dict(row) -> dict:
 
 def list_all() -> list[dict]:
     """Return all known plugins (one row per id, including disabled)."""
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(select(plugins).order_by(plugins.c.id)).mappings().all()
     return [_row_to_dict(r) for r in rows]
 
 
 def get(plugin_id: str) -> dict | None:
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         row = conn.execute(
             select(plugins).where(plugins.c.id == plugin_id)
         ).mappings().first()
@@ -115,7 +115,7 @@ def delete(plugin_id: str) -> None:
 
 
 def applied_migrations(plugin_id: str) -> set[int]:
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(
             select(plugin_migrations.c.version).where(plugin_migrations.c.plugin_id == plugin_id)
         ).all()

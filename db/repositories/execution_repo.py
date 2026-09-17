@@ -7,7 +7,7 @@ import time
 
 from sqlalchemy import and_, delete as sa_delete, func, insert as sa_insert, select, update as sa_update
 
-from db.engine import get_engine
+from db.engine import get_engine, read_connect
 from db.tables import execution_steps, executions
 
 
@@ -48,7 +48,7 @@ def complete(execution_id: int, status: str = "completed",
 
 def get_by_id(execution_id: int) -> dict | None:
     """Return an execution with all its steps."""
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         row = conn.execute(
             select(executions).where(executions.c.id == execution_id)
         ).mappings().first()
@@ -97,7 +97,7 @@ def list_executions(limit: int = 50, offset: int = 0,
     if where_clauses:
         stmt = stmt.where(and_(*where_clauses))
 
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(stmt).mappings().all()
 
     results = []
@@ -121,7 +121,7 @@ def count(phone: str | None = None, status: str | None = None) -> int:
         where_clauses.append(executions.c.status == status)
     if where_clauses:
         stmt = stmt.where(and_(*where_clauses))
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         return conn.execute(stmt).scalar() or 0
 
 
@@ -147,7 +147,7 @@ def delete_older_than(cutoff_ts: float) -> int:
 
 def get_webhook_payloads(limit: int = 50) -> list[dict]:
     """Get recent webhook payloads from execution steps (replaces in-memory deque)."""
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(
             select(execution_steps.c.ts, execution_steps.c.data, executions.c.phone)
             .join(executions, executions.c.id == execution_steps.c.execution_id)

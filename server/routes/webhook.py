@@ -1377,9 +1377,13 @@ def register_routes(app, deps):
                     })
 
                 # Existing unread tracking logic (for incoming messages read by us)
+                # One query for every contact at once. The previous version asked
+                # contact by contact and pulled each one's whole unread list just
+                # to intersect it here — 61k queries and 1.1M rows a day.
+                matched_by_contact = await asyncio.to_thread(
+                    contact_repo.match_unread_msg_ids, msg_ids)
                 for phone_key, contact in agent_handler._contacts.items():
-                    unread_ids = contact.get_unread_msg_ids()
-                    matched = [mid for mid in msg_ids if mid in unread_ids]
+                    matched = matched_by_contact.get(contact.id)
                     if matched:
                         logger.info("[Webhook] message.ack unread cleared for %s (ids=%s)", phone_key, matched)
                         contact.mark_as_read()

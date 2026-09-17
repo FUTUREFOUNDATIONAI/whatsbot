@@ -13,7 +13,7 @@ import time
 
 from sqlalchemy import select
 
-from db.engine import get_engine
+from db.engine import get_engine, read_connect
 from db.tables import ai_agents, ai_agents_history
 from db.upsert import upsert, upsert_ignore
 
@@ -38,7 +38,7 @@ def _row_to_dict(row) -> dict:
 
 
 def get(agent_key: str) -> dict | None:
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         row = conn.execute(
             select(ai_agents).where(ai_agents.c.agent_key == agent_key)
         ).mappings().first()
@@ -50,7 +50,7 @@ def get_default() -> dict | None:
 
 
 def list_all() -> list[dict]:
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(
             select(ai_agents).order_by(ai_agents.c.agent_key)
         ).mappings().all()

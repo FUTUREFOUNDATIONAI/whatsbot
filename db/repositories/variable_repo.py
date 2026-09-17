@@ -12,13 +12,13 @@ import time
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 
-from db.engine import get_engine
+from db.engine import get_engine, read_connect
 from db.tables import ai_variables
 from db.upsert import upsert
 
 
 def get(name: str) -> dict | None:
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         row = conn.execute(
             select(ai_variables).where(ai_variables.c.name == name)
         ).mappings().first()
@@ -26,7 +26,7 @@ def get(name: str) -> dict | None:
 
 
 def list_all() -> list[dict]:
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(
             select(ai_variables).order_by(ai_variables.c.name)
         ).mappings().all()
@@ -35,7 +35,7 @@ def list_all() -> list[dict]:
 
 def as_map() -> dict[str, str]:
     """Return ``{name: value}`` for fast prompt rendering."""
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(
             select(ai_variables.c.name, ai_variables.c.value)
         ).all()

@@ -173,11 +173,11 @@ Repos usam o padrão dialect-agnóstico baseado em `Table` objects:
 
 ```python
 from sqlalchemy import select
-from db.engine import get_engine
+from db.engine import read_connect
 from db.tables import contacts
 
 def get_by_phone(phone: str) -> dict | None:
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         row = conn.execute(
             select(contacts).where(contacts.c.phone == phone)
         ).mappings().first()
@@ -186,8 +186,8 @@ def get_by_phone(phone: str) -> dict | None:
 
 Regras:
 
-- Leitura: `with get_engine().connect() as conn:` (sem transação implícita).
-- Escrita: `with get_engine().begin() as conn:` (auto-commit no exit, rollback em exceção).
+- Leitura: `with read_connect() as conn:` — conexão em AUTOCOMMIT. `get_engine().connect()` abre transação implícita no primeiro statement e faz ROLLBACK ao fechar; num SELECT isolado isso é um BEGIN e um ROLLBACK de ida e volta por nada. Medido numa instalação de 4 bots contra Postgres gerenciado: ~950 mil pares/dia, todos tarifados pelo pooler.
+- Escrita: `with get_engine().begin() as conn:` (auto-commit no exit, rollback em exceção). **Nunca** usar `read_connect()` para escrever: em AUTOCOMMIT cada statement persiste sozinho, então operações de múltiplos statements como `increment_unread` e `mark_as_read` perderiam a atomicidade. É por isso que o AUTOCOMMIT é por conexão de leitura, e não default do engine.
 - UPSERT: usar `db.upsert.upsert()` / `db.upsert.upsert_ignore()` — escolhe `sqlite.insert()` ou `postgresql.insert()` automaticamente.
 - Nunca usar `?` ou `%s` direto — bind params nomeados (`:phone`) via `sqlalchemy.text()` ou expressões Core.
 - Migrations: Alembic ([db/alembic/versions](db/alembic/versions)). Para um schema change, rode `alembic revision --autogenerate -m "msg"` e revise. `init_db()` aplica `alembic upgrade head` no boot; DBs legados sem `alembic_version` são automaticamente stampados em `0001_baseline` antes do upgrade.
