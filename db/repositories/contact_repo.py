@@ -171,7 +171,7 @@ def unread_conversation_count() -> int:
     """Number of non-archived conversations that have unread messages — used for the
     browser-tab badge (e.g. "(3) WhatsBot"). Counts a conversation once regardless of
     how many messages are unread, mirroring the sidebar badge visibility."""
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         return conn.execute(
             select(func.count()).select_from(contacts).where(
                 (contacts.c.is_archived == 0)
@@ -369,7 +369,7 @@ def _contact_ids_matching_message(folded_q: str, archived: bool) -> dict[int, di
         ORDER BY m.ts DESC
     """)
     matched: dict[int, dict] = {}
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         for row in conn.execute(sql, {"archived": 1 if archived else 0}).mappings():
             cid = row["contact_id"]
             if cid in matched:

@@ -209,7 +209,7 @@ def get_by_msg_id(msg_id: str) -> dict | None:
     """Look up a single message by its GOWA msg_id."""
     if not msg_id:
         return None
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         row = conn.execute(
             select(messages).where(messages.c.msg_id == msg_id).limit(1)
         ).mappings().first()

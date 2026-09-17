@@ -12,13 +12,13 @@ import time
 
 from sqlalchemy import select
 
-from db.engine import get_engine
+from db.engine import get_engine, read_connect
 from db.tables import ai_prompts, ai_prompts_history
 from db.upsert import upsert, upsert_ignore
 
 
 def get(prompt_key: str) -> dict | None:
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         row = conn.execute(
             select(ai_prompts).where(ai_prompts.c.prompt_key == prompt_key)
         ).mappings().first()
@@ -26,7 +26,7 @@ def get(prompt_key: str) -> dict | None:
 
 
 def list_all() -> list[dict]:
-    with get_engine().connect() as conn:
+    with read_connect() as conn:
         rows = conn.execute(
             select(ai_prompts).order_by(ai_prompts.c.prompt_key)
         ).mappings().all()
