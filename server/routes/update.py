@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 import shutil
 import tempfile
@@ -17,7 +18,13 @@ from server.helpers import _ok, _err
 
 logger = logging.getLogger(__name__)
 
-GITHUB_REPO = "Techify-one/whatsbot"
+# De onde o auto-update baixa. Configurável porque quem roda um FORK precisa
+# apontar para o próprio repositório: caso contrário o botão "Atualizar" baixa a
+# release do upstream POR CIMA das mudanças do fork — e, como o número de versão
+# bate, nada parece errado. O estrago só aparece pelo comportamento que voltou.
+#
+# O default deste fork é o próprio fork. `WHATSBOT_UPDATE_REPO` sobrescreve.
+GITHUB_REPO = os.getenv("WHATSBOT_UPDATE_REPO", "").strip() or "FUTUREFOUNDATIONAI/whatsbot"
 GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 GITHUB_LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
 GITHUB_RAW_VERSION_URL_TEMPLATE = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{{tag}}/WHATSBOT_VERSION"
