@@ -1,7 +1,7 @@
 import { h } from 'preact';
 import { useState, useEffect, useRef, useCallback } from 'preact/hooks';
 import htm from 'htm';
-import { getContacts, getContact, markAsRead, markAsUnread, toggleContactAI, getTags, deleteContact, archiveContact, pinContact, checkPhone, lookupContactByPhone, updateContactTags, createTag } from '../../services/api.js';
+import { getContacts, getContact, getContactMessages, markAsRead, markAsUnread, toggleContactAI, getTags, deleteContact, archiveContact, pinContact, checkPhone, lookupContactByPhone, updateContactTags, createTag } from '../../services/api.js';
 import { ContactList } from './ContactList.js';
 import { ContactDetail } from './ContactDetail.js';
 import { ContactInfoPanel } from './ContactInfoPanel.js';
@@ -10,6 +10,23 @@ import { StartChatWarningModal } from './StartChatWarningModal.js';
 import { formatPhoneDisplay } from './utils.js';
 
 const html = htm.bind(h);
+
+// Opening a conversation loads only its newest page; older/newer pages are
+// fetched on demand (scroll, search hit, quoted message). Keeping the window
+// small is what makes a 5000 message group open as fast as a 15 message chat.
+const PAGE_LIMIT = 100;
+
+// Failed sends are kept in the DB; give them the local ids the retry button needs.
+function hydrateMessages(list) {
+  return (list || []).map(m => (
+    m.status === 'failed' ? { ...m, _localId: `loaded_${m.ts}`, _status: 'failed' } : m
+  ));
+}
+
+function sameMessage(a, b) {
+  return (a.ts === b.ts && a.role === b.role)
+    || (a.role === b.role && a.content === b.content && Math.abs(a.ts - b.ts) < 30);
+}
 
 // ── Main Component ───────────────────────────────────────────────
 
@@ -21,7 +38,15 @@ export function Contacts({ newMessage, chatPresence, contactInfoUpdated, tagsCha
   const [scrollToMsg, setScrollToMsg] = useState(null);  // DB id of a message to focus on open (search hit)
   const [contactData, setContactData] = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
-  const hasLoadedDetail = useRef(false);
+  const detailReq = useRef(0);          // id of the newest detail request (stale replies are dropped)
+  const detailAbort = useRef(null);     // aborts the previous contact's request on switch
+  const listReq = useRef(0);            // same guard for the contact list
+  const loadingMoreRef = useRef(false); // one older/newer page fetch at a time
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [loadingNewer, setLoadingNewer] = useState(false);
+  const contactDataRef = useRef(null);
+  const scrollToMsgRef = useRef(null);
+  const jumpToMessageRef = useRef(() => false);
   const [showInfoPanel, setShowInfoPanel] = useState(false);
   const openInfoAfterSelect = useRef(false);
   const [sidebarHidden, setSidebarHidden] = useState(false);
@@ -43,6 +68,8 @@ export function Contacts({ newMessage, chatPresence, contactInfoUpdated, tagsCha
 
   // Keep refs in sync — avoids stale closures
   useEffect(() => { selectedRef.current = selected; }, [selected]);
+  scrollToMsgRef.current = scrollToMsg;
+  contactDataRef.current = contactData;
   useEffect(() => { contactsRef.current = contacts; }, [contacts]);
 
   // Notify the app shell whenever the conversation list changes so it can refresh
@@ -267,6 +294,11 @@ export function Contacts({ newMessage, chatPresence, contactInfoUpdated, tagsCha
 
   // Push URL when selecting/deselecting a contact
   const selectContact = useCallback((phone, msgId = null) => {
+    if (phone && phone === selectedRef.current && msgId != null) {
+      // Already open: the hit may sit outside the loaded window, jump to it.
+      jumpToMessageRef.current(msgId);
+      return;
+    }
     setScrollToMsg(msgId != null ? msgId : null);
     setSelected(phone);
     if (phone) {
@@ -287,14 +319,20 @@ export function Contacts({ newMessage, chatPresence, contactInfoUpdated, tagsCha
   const showArchivedRef = useRef(false);
   useEffect(() => { showArchivedRef.current = showArchived; }, [showArchived]);
 
+  // Only the newest list request may write state: an older, slower reply (a
+  // stale search, the boot load overtaken by a WS refresh) is discarded.
   const fetchContacts = useCallback((q = '') => {
+    const reqId = ++listReq.current;
     setLoading(true);
     getContacts(q, showArchivedRef.current).then(res => {
+      if (reqId !== listReq.current) return;
       if (res.ok) {
         setContacts(res.data);
         contactsRef.current = res.data;
       }
       setLoading(false);
+    }).catch(() => {
+      if (reqId === listReq.current) setLoading(false);
     });
   }, []);
 
@@ -373,8 +411,15 @@ export function Contacts({ newMessage, chatPresence, contactInfoUpdated, tagsCha
     getTags().then(res => { if (res.ok) setGlobalTags(res.data); });
   }, []);
 
-  // Reload when archive filter changes (and drop any active selection)
-  useEffect(() => { fetchContacts(search); setSelectionMode(false); setSelectedPhones([]); }, [showArchived]);
+  // Reload when archive filter changes (and drop any active selection). Skipped
+  // on mount: the initial load above already fetches the list.
+  const archiveEffectMounted = useRef(false);
+  useEffect(() => {
+    if (archiveEffectMounted.current) fetchContacts(search);
+    archiveEffectMounted.current = true;
+    setSelectionMode(false);
+    setSelectedPhones([]);
+  }, [showArchived]);
 
   // Resolve initialContactId → phone when contacts are loaded
   useEffect(() => {
@@ -396,65 +441,242 @@ export function Contacts({ newMessage, chatPresence, contactInfoUpdated, tagsCha
     }
   }, [initialContactId, contacts, loading]);
 
-  // Debounced search
+  // Debounced search (not on mount: the initial load already fetched the list)
+  const searchEffectMounted = useRef(false);
   useEffect(() => {
+    if (!searchEffectMounted.current) { searchEffectMounted.current = true; return; }
     const timer = setTimeout(() => fetchContacts(search), 300);
     return () => clearTimeout(timer);
   }, [search]);
 
+  // ── Paged history ──────────────────────────────────────────────
+  // contactData.messages is a WINDOW over the conversation: has_more_before /
+  // has_more_after say whether older / newer messages exist on the server.
+
+  // Merge WS messages that arrived while a page was in flight, dropping copies
+  // the page already contains.
+  function mergePending(base, pending) {
+    if (!pending.length) return base;
+    const fresh = pending.filter(m => !base.some(e => sameMessage(e, m)));
+    return fresh.length ? [...base, ...fresh] : base;
+  }
+
+  // Originals cited by messages in the window but stored outside it. Keeping
+  // them in a side map lets a reply render its quote and jump to it.
+  const withQuoted = (prev, quoted) => (
+    quoted && Object.keys(quoted).length ? { ...(prev || {}), ...quoted } : (prev || {})
+  );
+
+  const loadDetail = useCallback((phone, { around = null } = {}) => {
+    if (detailAbort.current) detailAbort.current.abort();
+    const controller = new AbortController();
+    detailAbort.current = controller;
+    const reqId = ++detailReq.current;
+
+    // Buffer messages that arrive while the request is in flight.
+    const preFetchBuffer = pendingWsMessages.current[phone] || [];
+    pendingWsMessages.current[phone] = [];
+    const isPageVisible = pageVisibleRef.current;
+
+    return getContact(phone, isPageVisible, { limit: PAGE_LIMIT, around, signal: controller.signal })
+      .then(res => {
+        // A newer request (another contact, another jump) owns the screen now.
+        if (reqId !== detailReq.current || selectedRef.current !== phone) return false;
+        if (res && res.ok) {
+          const data = res.data;
+          const duringFetch = pendingWsMessages.current[phone] || [];
+          const hasNewer = !!data.has_more_after;
+          // While the window is not at the live edge, a WS message belongs to
+          // the part not loaded yet; it is fetched when the user gets there.
+          const buffered = [...preFetchBuffer, ...duringFetch];
+          data.messages = hydrateMessages(mergePending(data.messages || [], hasNewer ? [] : buffered));
+          data.quoted = withQuoted(null, data.quoted);
+          // Behind the live edge the buffer is kept: it is applied when the
+          // window reaches the latest messages again.
+          pendingWsMessages.current[phone] = hasNewer ? buffered : [];
+          setContactData(data);
+        }
+        return !!(res && res.ok);
+      })
+      .catch(err => {
+        if (err && err.name === 'AbortError') return false;
+        return false;
+      })
+      .finally(() => {
+        if (reqId === detailReq.current) setLoadingDetail(false);
+      });
+  }, []);
+
   // Load contact detail when selected changes
   useEffect(() => {
-    if (!selected) { setContactData(null); return; }
+    if (!selected) {
+      if (detailAbort.current) detailAbort.current.abort();
+      detailReq.current++;
+      setContactData(null);
+      setLoadingDetail(false);
+      return;
+    }
     if (openInfoAfterSelect.current) {
       openInfoAfterSelect.current = false;
       setShowInfoPanel(true);
     } else {
       setShowInfoPanel(false);
     }
-    if (!hasLoadedDetail.current) setLoadingDetail(true);
-    // Preserve any messages already buffered for this contact (arrived before selection)
-    // but reset the accumulator for new messages arriving during fetch
-    const preFetchBuffer = pendingWsMessages.current[selected] || [];
-    pendingWsMessages.current[selected] = [];
+    // Always show the loading state for the new contact: keeping the previous
+    // conversation on screen while the next one loads made a slow response look
+    // like a click that did nothing (and let a late answer land on the wrong chat).
+    setLoadingDetail(true);
+    setContactData(null);
+    setLoadingOlder(false);
+    setLoadingNewer(false);
+    loadingMoreRef.current = false;
     // Clear unread badges immediately in local state (only if page is visible)
-    const isPageVisible = pageVisibleRef.current;
-    if (isPageVisible) {
+    if (pageVisibleRef.current) {
       setContacts(prev => prev.map(c =>
         c.phone === selected ? { ...c, unread_count: 0, unread_ai_count: 0, has_unread_mention: false } : c
       ));
     }
-    getContact(selected, isPageVisible).then(res => {
-      if (res.ok) {
-        const data = res.data;
-        // Merge buffered messages: pre-fetch (arrived before click) + during-fetch (arrived during loading)
-        const duringFetch = pendingWsMessages.current[selected] || [];
-        const pending = [...preFetchBuffer, ...duringFetch];
-        if (pending.length > 0) {
-          const existing = data.messages || [];
-          const newMsgs = pending.filter(m =>
-            !existing.some(e =>
-              (e.ts === m.ts && e.role === m.role) ||
-              (e.role === m.role && e.content === m.content && Math.abs(e.ts - m.ts) < 30)
-            )
-          );
-          if (newMsgs.length > 0) {
-            data.messages = [...(data.messages || []), ...newMsgs];
-          }
-        }
-        // Hydrate failed messages with _localId so retry button works after reload
-        data.messages = (data.messages || []).map(m => {
-          if (m.status === 'failed') {
-            return { ...m, _localId: `loaded_${m.ts}`, _status: 'failed' };
-          }
-          return m;
-        });
-        pendingWsMessages.current[selected] = [];
-        setContactData(data);
-      }
-      hasLoadedDetail.current = true;
-      setLoadingDetail(false);
-    });
+    // A search hit opens the page around that message instead of the newest one.
+    const target = scrollToMsgRef.current;
+    loadDetail(selected, { around: target != null ? target : null });
   }, [selected]);
+
+  // Older page: prepend the messages before the first one loaded. Returns the
+  // number of messages added so the view can keep its scroll position.
+  const loadOlder = useCallback(async () => {
+    const phone = selectedRef.current;
+    const cur = contactDataRef.current;
+    if (!phone || !cur || !cur.has_more_before || loadingMoreRef.current) return 0;
+    const first = (cur.messages || []).find(m => m._id != null);
+    if (!first) return 0;
+    const contactId = cur.id;
+    loadingMoreRef.current = true;
+    setLoadingOlder(true);
+    const reqId = detailReq.current;
+    let added = 0;
+    try {
+      const res = await getContactMessages(phone, { before: first._id, limit: PAGE_LIMIT });
+      if (reqId !== detailReq.current || selectedRef.current !== phone) return 0;
+      if (res && res.ok) {
+        const older = hydrateMessages(res.data.messages);
+        added = older.length;
+        setContactData(prev => {
+          if (!prev || prev.id !== contactId) return prev;
+          const ids = new Set(prev.messages.filter(m => m._id != null).map(m => m._id));
+          const fresh = older.filter(m => m._id == null || !ids.has(m._id));
+          return {
+            ...prev,
+            messages: [...fresh, ...prev.messages],
+            has_more_before: !!res.data.has_more_before,
+            quoted: withQuoted(prev.quoted, res.data.quoted),
+          };
+        });
+      }
+    } catch (_) { /* transient: the user can scroll up again to retry */ }
+    finally {
+      loadingMoreRef.current = false;
+      setLoadingOlder(false);
+    }
+    return added;
+  }, []);
+
+  // Newer page (after jumping to an old message): append what follows the last
+  // loaded message until the live edge is reached again.
+  const loadNewer = useCallback(async () => {
+    const phone = selectedRef.current;
+    const cur = contactDataRef.current;
+    if (!phone || !cur || !cur.has_more_after || loadingMoreRef.current) return 0;
+    const persisted = (cur.messages || []).filter(m => m._id != null);
+    const last = persisted[persisted.length - 1];
+    if (!last) return 0;
+    const contactId = cur.id;
+    loadingMoreRef.current = true;
+    setLoadingNewer(true);
+    const reqId = detailReq.current;
+    let added = 0;
+    try {
+      const res = await getContactMessages(phone, { after: last._id, limit: PAGE_LIMIT });
+      if (reqId !== detailReq.current || selectedRef.current !== phone) return 0;
+      if (res && res.ok) {
+        const newer = hydrateMessages(res.data.messages);
+        added = newer.length;
+        const reachedEdge = !res.data.has_more_after;
+        // WS messages that arrived while the window was behind the live edge.
+        const buffered = reachedEdge ? (pendingWsMessages.current[phone] || []) : [];
+        if (reachedEdge) pendingWsMessages.current[phone] = [];
+        setContactData(prev => {
+          if (!prev || prev.id !== contactId) return prev;
+          const ids = new Set(prev.messages.filter(m => m._id != null).map(m => m._id));
+          const fresh = newer.filter(m => m._id == null || !ids.has(m._id));
+          return {
+            ...prev,
+            messages: mergePending([...prev.messages, ...fresh], buffered),
+            has_more_after: !!res.data.has_more_after,
+            quoted: withQuoted(prev.quoted, res.data.quoted),
+          };
+        });
+      }
+    } catch (_) { /* transient */ }
+    finally {
+      loadingMoreRef.current = false;
+      setLoadingNewer(false);
+    }
+    return added;
+  }, []);
+
+  // Jump to a message that may lie outside the loaded window (search hit, quote
+  // to an old message, "back to latest"): fetch the page around it and replace
+  // the window. Resolves true when the message is on screen afterwards.
+  const jumpToMessage = useCallback(async (messageId) => {
+    const phone = selectedRef.current;
+    if (!phone || messageId == null) return false;
+    const cur = contactDataRef.current;
+    if (cur && (cur.messages || []).some(m => String(m._id) === String(messageId))) {
+      setScrollToMsg(messageId);      // already loaded: just focus it
+      return true;
+    }
+    if (!cur) {
+      // The conversation itself is still loading (a hit clicked right after
+      // opening it): restart that load centered on the message instead of
+      // cancelling it without a replacement, which would leave it loading forever.
+      setScrollToMsg(messageId);
+      loadDetail(phone, { around: messageId });
+      return true;
+    }
+    if (detailAbort.current) detailAbort.current.abort();
+    const reqId = ++detailReq.current;
+    const contactId = cur.id;
+    loadingMoreRef.current = true;
+    try {
+      const res = await getContactMessages(phone, { around: messageId, limit: PAGE_LIMIT });
+      if (reqId !== detailReq.current || selectedRef.current !== phone) return false;
+      if (!res || !res.ok) return false;
+      setScrollToMsg(messageId);
+      setContactData(prev => {
+        if (!prev || (contactId != null && prev.id !== contactId)) return prev;
+        return {
+          ...prev,
+          messages: hydrateMessages(res.data.messages),
+          has_more_before: !!res.data.has_more_before,
+          has_more_after: !!res.data.has_more_after,
+          quoted: withQuoted(null, res.data.quoted),
+        };
+      });
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      loadingMoreRef.current = false;
+    }
+  }, [loadDetail]);
+  jumpToMessageRef.current = jumpToMessage;
+
+  // Back to the live edge after browsing an old part of the conversation.
+  const jumpToLatest = useCallback(async () => {
+    const phone = selectedRef.current;
+    if (!phone) return;
+    await loadDetail(phone);
+  }, [loadDetail]);
 
   // Handle chat presence events (typing/recording indicators)
   useEffect(() => {
@@ -627,6 +849,8 @@ export function Contacts({ newMessage, chatPresence, contactInfoUpdated, tagsCha
   // Covers both WS updates and fresh data from API fetch
   useEffect(() => {
     if (!contactData || !contactData.messages || !selected) return;
+    // An old window says nothing about the conversation's latest message.
+    if (contactData.has_more_after) return;
     const msgs = contactData.messages;
     // Find the last visible (non-transcription/system) assistant message
     for (let i = msgs.length - 1; i >= 0; i--) {
@@ -660,6 +884,15 @@ export function Contacts({ newMessage, chatPresence, contactInfoUpdated, tagsCha
             (m.ts === message.ts && m.role === message.role) ||
             (m.role === message.role && m.content === message.content && Math.abs(m.ts - message.ts) < 30)
           )) {
+            pendingWsMessages.current[phone] = [...buf, message];
+          }
+          return prev;
+        }
+        // Browsing an old part of the conversation: this message belongs to the
+        // part not loaded yet. Buffer it; it is merged on reaching the latest.
+        if (prev.has_more_after) {
+          const buf = pendingWsMessages.current[phone] || [];
+          if (!buf.some(m => sameMessage(m, message))) {
             pendingWsMessages.current[phone] = [...buf, message];
           }
           return prev;
@@ -841,6 +1074,12 @@ export function Contacts({ newMessage, chatPresence, contactInfoUpdated, tagsCha
                 scrollToMsg=${scrollToMsg}
                 onScrolledToMsg=${() => setScrollToMsg(null)}
                 onOpenParticipant=${handleOpenParticipant}
+                loadingOlder=${loadingOlder}
+                loadingNewer=${loadingNewer}
+                onLoadOlder=${loadOlder}
+                onLoadNewer=${loadNewer}
+                onJumpToMessage=${jumpToMessage}
+                onJumpToLatest=${jumpToLatest}
               />`
           }
           ${showInfoPanel && selected ? html`

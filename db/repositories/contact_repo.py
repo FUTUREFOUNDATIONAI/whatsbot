@@ -391,15 +391,20 @@ def list_contacts(q: str = "", archived: bool = False) -> list[dict]:
     with get_engine().connect() as conn:
         rows = conn.execute(sql, {"archived": 1 if archived else 0}).mappings().all()
 
+        # One query for every contact's tags (tag id order) instead of one per
+        # contact: a 378 contact list used to cost 379 queries.
+        tags_by_contact: dict[int, list[str]] = {}
+        for tag_row in conn.execute(
+            select(contact_tags.c.contact_id, tags.c.name)
+            .join(tags, contact_tags.c.tag_id == tags.c.id)
+            .order_by(tags.c.id)
+        ).all():
+            tags_by_contact.setdefault(tag_row.contact_id, []).append(tag_row.name)
+
         results = []
         for row in rows:
             contact_id = row["id"]
-            tag_rows = conn.execute(
-                select(tags.c.name)
-                .join(contact_tags, contact_tags.c.tag_id == tags.c.id)
-                .where(contact_tags.c.contact_id == contact_id)
-            ).all()
-            tags_list = [t.name for t in tag_rows]
+            tags_list = tags_by_contact.get(contact_id, [])
 
             last_content = ""
             lmt = row["last_msg_media_type"]

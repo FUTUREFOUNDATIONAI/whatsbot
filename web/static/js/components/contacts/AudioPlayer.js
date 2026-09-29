@@ -15,6 +15,24 @@ export function AudioPlayer({ src, isLocalBlob }) {
 
   const audioSrc = isLocalBlob ? src : '/' + src;
 
+  // A long conversation holds hundreds of players and each one used to request
+  // its file at once just to learn the duration. The sources are only attached
+  // once the player is near the viewport, so the request happens on demand.
+  // Adding a <source> to an idle <audio> starts loading it, and it stays
+  // attached afterwards. Browsers without IntersectionObserver load right away.
+  const wrapRef = useRef(null);
+  const [near, setNear] = useState(isLocalBlob || typeof IntersectionObserver === 'undefined');
+  useEffect(() => {
+    if (near) return;
+    const el = wrapRef.current;
+    if (!el) { setNear(true); return; }
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some(e => e.isIntersecting)) { setNear(true); io.disconnect(); }
+    }, { rootMargin: '400px 0px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [near]);
+
   useEffect(() => {
     const a = audioRef.current;
     if (!a) return;
@@ -70,11 +88,13 @@ export function AudioPlayer({ src, isLocalBlob }) {
   const speed = SPEEDS[speedIdx];
 
   return html`
-    <div class="flex items-center gap-[8px] mb-1" style="min-width:240px">
+    <div ref=${wrapRef} class="flex items-center gap-[8px] mb-1" style="min-width:240px">
       <audio ref=${audioRef} preload="metadata">
-        <source src="${audioSrc}" type="audio/wav" />
-        <source src="${audioSrc}" type="audio/ogg" />
-        <source src="${audioSrc}" type="audio/mpeg" />
+        ${near ? html`
+          <source src="${audioSrc}" type="audio/wav" />
+          <source src="${audioSrc}" type="audio/ogg" />
+          <source src="${audioSrc}" type="audio/mpeg" />
+        ` : null}
       </audio>
 
       <!-- Play/Pause -->

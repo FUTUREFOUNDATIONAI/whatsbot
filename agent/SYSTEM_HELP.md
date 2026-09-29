@@ -18,6 +18,20 @@ Esta tela mostra as conversas, mensagens, contatos e o estado da conexão com o 
 
 [Abrir conversas]({{base_url}}/)
 
+### Ler mensagens antigas de uma conversa
+
+Ao abrir uma conversa, o WhatsBot-Lite mostra primeiro as mensagens mais recentes, para que ela abra rápido mesmo quando o histórico tem milhares de mensagens. Nada é apagado: o histórico completo continua guardado.
+
+- Para ver mensagens mais antigas, role a conversa para cima. O botão **Carregar mensagens anteriores** no topo faz o mesmo e mais mensagens aparecem sem você perder o lugar onde estava.
+- A busca da lista de conversas procura em todo o histórico, inclusive nas mensagens que ainda não apareceram na tela. Clique no resultado e a conversa abre direto na mensagem encontrada.
+- Se uma mensagem responde a outra bem antiga, clique na citação e a conversa vai até a mensagem original.
+- Depois de saltar para uma mensagem antiga, aparece o botão **Ir para as mensagens mais recentes**. Ao enviar uma mensagem, a conversa volta sozinha ao final.
+- Áudios e fotos de perfil só são baixados quando chegam perto da tela, então uma conversa longa não baixa tudo de uma vez.
+
+O atalho de busca do navegador (Ctrl+F) só encontra o que já está carregado na tela. Para procurar em todo o histórico, use a busca do WhatsBot-Lite.
+
+[Abrir conversas]({{base_url}}/)
+
 ### Abrir a conversa de quem falou em um grupo
 
 Dentro de um grupo, o nome de quem enviou cada mensagem aparece acima do texto. Quando o nome está em azul e fica sublinhado ao passar o mouse, clique nele para falar com essa pessoa em particular:

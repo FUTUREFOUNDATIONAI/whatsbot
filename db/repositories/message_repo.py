@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 
-from sqlalchemy import and_, delete as sa_delete, insert as sa_insert, select, update as sa_update
+from sqlalchemy import and_, delete as sa_delete, insert as sa_insert, or_, select, update as sa_update
 
 from db.engine import get_engine
 from db.tables import messages
@@ -50,9 +50,143 @@ def get_all(contact_id: int) -> list[dict]:
         rows = conn.execute(
             select(messages)
             .where(messages.c.contact_id == contact_id)
-            .order_by(messages.c.ts)
+            .order_by(messages.c.ts, messages.c.id)
         ).mappings().all()
     return [_row_to_dict(r) for r in rows]
+
+
+# ── Cursor pagination ─────────────────────────────────────────────────
+# Messages are ordered by (ts, id). The DB id is the cursor handed to the
+# client (`_id`), and ts breaks ties deterministically, so two messages that
+# share a timestamp are never skipped or repeated between pages.
+
+def _cursor_of(conn, contact_id: int, message_id: int) -> tuple[float, int] | None:
+    row = conn.execute(
+        select(messages.c.ts, messages.c.id).where(
+            (messages.c.id == message_id) & (messages.c.contact_id == contact_id)
+        )
+    ).first()
+    return (row.ts, row.id) if row else None
+
+
+def _page_older(conn, contact_id: int, cursor, limit: int):
+    """Up to ``limit`` messages strictly older than ``cursor`` (ascending), plus
+    whether even older ones remain. ``cursor=None`` means "from the newest"."""
+    stmt = select(messages).where(messages.c.contact_id == contact_id)
+    if cursor is not None:
+        ts, mid = cursor
+        stmt = stmt.where(or_(messages.c.ts < ts, and_(messages.c.ts == ts, messages.c.id < mid)))
+    rows = conn.execute(
+        stmt.order_by(messages.c.ts.desc(), messages.c.id.desc()).limit(limit + 1)
+    ).mappings().all()
+    has_more = len(rows) > limit
+    rows = list(rows[:limit])
+    rows.reverse()
+    return rows, has_more
+
+
+def _page_newer(conn, contact_id: int, cursor, limit: int):
+    """Up to ``limit`` messages strictly newer than ``cursor`` (ascending), plus
+    whether even newer ones remain."""
+    ts, mid = cursor
+    rows = conn.execute(
+        select(messages)
+        .where(
+            (messages.c.contact_id == contact_id)
+            & or_(messages.c.ts > ts, and_(messages.c.ts == ts, messages.c.id > mid))
+        )
+        .order_by(messages.c.ts, messages.c.id)
+        .limit(limit + 1)
+    ).mappings().all()
+    has_more = len(rows) > limit
+    return list(rows[:limit]), has_more
+
+
+def find_id_by_msg_id(contact_id: int, msg_id: str) -> int | None:
+    """DB id of a contact's message given its GOWA msg_id (None when unknown)."""
+    if not msg_id:
+        return None
+    with get_engine().connect() as conn:
+        return conn.execute(
+            select(messages.c.id)
+            .where((messages.c.contact_id == contact_id) & (messages.c.msg_id == msg_id))
+            .limit(1)
+        ).scalar_one_or_none()
+
+
+def get_page(contact_id: int, limit: int = 60, *, before: int | None = None,
+             after: int | None = None, around: int | None = None) -> dict:
+    """One page of a contact's history, ascending, with cursor metadata.
+
+    - no cursor: the newest ``limit`` messages
+    - ``before=<id>``: the ``limit`` messages older than that one
+    - ``after=<id>``: the ``limit`` messages newer than that one
+    - ``around=<id>``: that message with about half a page on each side
+
+    Returns ``{"messages", "has_more_before", "has_more_after", "found"}``.
+    ``found`` is False when a cursor id does not belong to this contact; the
+    caller decides whether that is an error (``before``/``after``) or a
+    fallback to the newest page (``around``).
+    """
+    limit = max(1, int(limit))
+    with get_engine().connect() as conn:
+        if around is not None:
+            cur = _cursor_of(conn, contact_id, around)
+            if cur is None:
+                return {"messages": [], "has_more_before": False,
+                        "has_more_after": False, "found": False}
+            half = max(1, limit // 2)
+            older, more_before = _page_older(conn, contact_id, cur, half)
+            target = conn.execute(
+                select(messages).where(messages.c.id == around)
+            ).mappings().all()
+            newer, more_after = _page_newer(conn, contact_id, cur, half)
+            rows = [*older, *target, *newer]
+        elif before is not None:
+            cur = _cursor_of(conn, contact_id, before)
+            if cur is None:
+                return {"messages": [], "has_more_before": False,
+                        "has_more_after": False, "found": False}
+            rows, more_before = _page_older(conn, contact_id, cur, limit)
+            more_after = True  # the cursor message itself is newer
+        elif after is not None:
+            cur = _cursor_of(conn, contact_id, after)
+            if cur is None:
+                return {"messages": [], "has_more_before": False,
+                        "has_more_after": False, "found": False}
+            rows, more_after = _page_newer(conn, contact_id, cur, limit)
+            more_before = True
+        else:
+            rows, more_before = _page_older(conn, contact_id, None, limit)
+            more_after = False
+    return {
+        "messages": [_row_to_dict(r) for r in rows],
+        "has_more_before": more_before,
+        "has_more_after": more_after,
+        "found": True,
+    }
+
+
+def get_quoted(contact_id: int, page: list[dict]) -> dict[str, dict]:
+    """Messages cited by ``page`` that are NOT part of it, keyed by GOWA msg_id.
+
+    A paginated window may hold a reply whose original lives outside it; the
+    client needs the original to render the quote and to jump to it.
+    """
+    present = {m.get("msg_id") for m in page if m.get("msg_id")}
+    wanted = {
+        m["reply_to_msg_id"] for m in page
+        if m.get("reply_to_msg_id") and m["reply_to_msg_id"] not in present
+    }
+    if not wanted:
+        return {}
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            select(messages).where(
+                (messages.c.contact_id == contact_id) & messages.c.msg_id.in_(sorted(wanted))
+            )
+        ).mappings().all()
+    return {r["msg_id"]: _row_to_dict(r) for r in rows}
 
 
 def get_context(contact_id: int, limit: int) -> list[dict]:

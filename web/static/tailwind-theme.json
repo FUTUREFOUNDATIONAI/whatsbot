@@ -1,0 +1,29 @@
+{
+  "darkMode": "class",
+  "theme": {
+    "extend": {
+      "colors": {
+        "whatsapp": "#25D366",
+        "wa": {
+          "teal": "rgb(var(--wa-teal) / <alpha-value>)",
+          "tealDark": "rgb(var(--wa-tealDark) / <alpha-value>)",
+          "bg": "rgb(var(--wa-bg) / <alpha-value>)",
+          "panel": "rgb(var(--wa-panel) / <alpha-value>)",
+          "chatBg": "rgb(var(--wa-chatBg) / <alpha-value>)",
+          "chatOverlay": "rgb(var(--wa-chatOverlay) / <alpha-value>)",
+          "outgoing": "rgb(var(--wa-outgoing) / <alpha-value>)",
+          "incoming": "rgb(var(--wa-incoming) / <alpha-value>)",
+          "text": "rgb(var(--wa-text) / <alpha-value>)",
+          "secondary": "rgb(var(--wa-secondary) / <alpha-value>)",
+          "border": "rgb(var(--wa-border) / <alpha-value>)",
+          "inputBg": "rgb(var(--wa-inputBg) / <alpha-value>)",
+          "hover": "rgb(var(--wa-hover) / <alpha-value>)",
+          "selected": "rgb(var(--wa-selected) / <alpha-value>)",
+          "badge": "rgb(var(--wa-badge) / <alpha-value>)",
+          "icon": "rgb(var(--wa-icon) / <alpha-value>)",
+          "iconActive": "rgb(var(--wa-iconActive) / <alpha-value>)"
+        }
+      }
+    }
+  }
+}

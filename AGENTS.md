@@ -15,7 +15,7 @@ Bot de WhatsApp com IA para usuários finais, distribuído como EXE Windows.
 - **Proxy LLM da Techify** (`https://llm.techify.one/api/v1`) — provider de LLM, API **compatível com OpenRouter/OpenAI**. Substituiu o OpenRouter direto: a chave é provisionada pelo wizard de 1ª execução e o crédito/recarga é gerido pela Techify. O base URL é configurável via env `LLM_API_BASE_URL`. A chave continua sendo persistida na config key `openrouter_api_key` (nome legado mantido por compatibilidade)
 - **AGNO** (`agno` 2.x) — framework de agentes usado como **motor de LLM** do agente. O loop de raciocínio + tool calling roda via `agno.agent.Agent`, apontado ao proxy Techify pelo model `OpenAILike`. Encapsulado em [agent/agno_engine.py](agent/agno_engine.py); o `AgentHandler` delega a ele preservando todos os hooks de plugin (filters/events), usage e execution tracking. Transcrição de áudio/descrição de imagem continuam em chamadas diretas ao cliente OpenAI (não são agênticas)
 - **FastAPI + uvicorn** — backend web (REST API + WebSocket)
-- **Preact + HTM + Tailwind CSS** — frontend web (sem build step, vendorizado local)
+- **Preact + HTM + Tailwind CSS**: frontend web (sem build step para o JS; o CSS utilitário é pré-gerado e versionado em `web/static/css/tailwind.css`, ver [CSS do Tailwind](#css-do-tailwind))
 - **PyInstaller** — empacotamento como EXE
 
 ## Arquitetura
@@ -60,6 +60,9 @@ storages/plugins/    → user-writable, ignorado por .gitignore (preservado em u
 web/index.html       → entry point do frontend (HTML + import map)
 web/static/js/       → componentes Preact + HTM (sem build step)
 web/static/vendor/   → libs JS vendorizadas (preact, htm, tailwind)
+web/static/css/tailwind.css → CSS utilitário pré-gerado do core (não editar à mão; gerado por tools/css)
+web/static/tailwind-theme.json → tema do Tailwind (fonte única para o build e para o runtime dos plugins)
+tools/css/           → build do CSS (Node só em dev; usuários finais não precisam)
 GOWA_VERSION         → versão do GOWA que acompanha esta release (fonte única)
 gowa/binary.py       → resolve qual binário rodar (bin/ bundled vs storages/bin/ gerenciado) + metadados
 gowa/updater.py      → download/verificação/swap/rollback do binário GOWA
@@ -214,6 +217,17 @@ Mensagens recebidas no WhatsApp são entregues em tempo real via webhook do GOWA
 6. Resposta é enviada via `gowa_client.send_message()`
 
 **NÃO usa polling** — o auto-reply por polling foi removido. Toda recepção de mensagens é via webhook.
+
+**Histórico paginado**: `GET /api/contacts/{phone}?limit=N` devolve só a janela mais recente (sem `limit` mantém o
+formato antigo, com tudo). A janela é ordenada por `(ts, id)`, e o `_id` da mensagem é o cursor (o `ts` sozinho não
+serve: mensagens com o mesmo timestamp seriam puladas). `GET /api/contacts/{phone}/messages` aceita **um** entre
+`before`, `after` e `around` (id de mensagem) e devolve `has_more_before`/`has_more_after` e `quoted` (originais de
+respostas que ficaram fora da janela). É só leitura: não marca como lida nem cria contato. No frontend
+([Contacts.js](web/static/js/components/contacts/Contacts.js)) `contactData.messages` é uma **janela**, não a
+conversa: a busca do servidor continua cobrindo o histórico inteiro, e um resultado, uma citação antiga ou o envio de
+mensagem chamam `jumpToMessage`/`jumpToLatest`. Enquanto a janela não está no fim (`has_more_after`), mensagens ao vivo
+do WebSocket ficam em buffer e entram quando a janela alcança o fim. Respostas de contato antigas são descartadas por
+`detailReq` (e o `fetch` anterior é abortado), para uma resposta lenta nunca cair na conversa errada.
 
 ## Memória por contato
 
@@ -415,6 +429,25 @@ Nenhuma dessas chaves está no `allowed_keys` do `PUT /api/config`: a escrita pa
 
 **Atenção em Docker Swarm com múltiplas réplicas**: `storages` é volume local por nó, então cada réplica
 atualizaria o próprio binário. O update loga um warning nesse caso.
+
+## CSS do Tailwind
+
+O core **não carrega mais o compilador do Tailwind no navegador**. O runtime (`vendor/tailwind.js`) observa o DOM e
+reprocessa todas as classes a cada mudança, o que travava a abertura de conversas longas (medido: era o maior
+consumo de CPU do JS). No lugar, o `index.html` carrega [tailwind.css](web/static/css/tailwind.css), gerado
+antes do commit e **versionado**, então quem instala o WhatsBot-Lite não precisa de Node.
+
+- **Regerar**: `cd tools/css && npm install && npm run build`. O tema vive em
+  [tailwind-theme.json](web/static/tailwind-theme.json), lido pelo build e pelo runtime dos plugins.
+- **Conferir**: `npm run check` falha se o `tailwind.css` versionado estiver desatualizado. Rode antes de commitar
+  qualquer mudança de classe em `web/` ou em `assets/plugin_examples/`. Classes montadas por concatenação
+  (`` `bg-${cor}-100` ``) **não são detectadas**: escreva a classe completa, ou ela some do CSS gerado.
+- **Ordem no `<head>`**: `custom.css` vem ANTES de `tailwind.css`. O runtime antigo anexava o estilo por último e
+  ganhava os empates; manter essa ordem preserva o resultado visual.
+- **Plugins**: o build só varre o core e `assets/plugin_examples/`. Plugins instalados depois (Loja, Chat, zip)
+  usam classes arbitrárias, então [PluginScreen.js](web/static/js/components/PluginScreen.js) carrega o runtime sob
+  demanda (`utils/tailwindRuntime.js`) na primeira tela de plugin aberta. O runtime fica FORA do caminho de
+  conversas e do restante do core.
 
 ## Navegação do painel
 
@@ -926,6 +959,7 @@ python -c "import uvicorn; from server.dev import app; uvicorn.run(app, host='12
 - GOWA usa `stdout=subprocess.DEVNULL` — NUNCA usar `subprocess.PIPE` sem consumir, causa deadlock no Windows
 - Config auto-salva no shutdown do server (lifespan) e na primeira execução (`Settings.load`)
 - Frontend vendorizado: libs JS em `web/static/vendor/` — sem dependência de CDN em runtime
+- **Permissão de envio em grupo**: a abertura de um grupo consulta o GOWA (`can_bot_send_in_group`) com cache de 60 s e timeout de 4 s, em paralelo com o banco; se o GOWA demorar ou falhar, vale o valor já salvo. O webhook continua atualizando o valor a cada mensagem do grupo
 - **Sockets fantasma no Windows**: ao reiniciar frequentemente, portas podem ficar presas em LISTENING com PIDs inexistentes. Use porta alternativa ou reinicie o PC
 - **`windows_start.bat` mata processos**: o bat já executa `taskkill` para gowa.exe e uvicorn.exe antes de iniciar. No Linux, o `linux_start.sh` faz `pkill -f bin/gowa` no fim de cada iteração do loop pra liberar a porta antes de relançar; pra parar manualmente, `pkill -f "uvicorn server.dev"` + `pkill -f bin/gowa`
 - **GOWA `/chats` limit máximo**: `GET /chats?limit=N` retorna HTTP 400 para valores acima de ~200. Usar `limit=100` como máximo seguro

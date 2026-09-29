@@ -1,0 +1,12 @@
+{
+  "name": "whatsbot-lite-css",
+  "private": true,
+  "description": "Build-time only: generates web/static/css/tailwind.css. Users never need Node; the generated file is committed.",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node build.mjs --check"
+  },
+  "devDependencies": {
+    "tailwindcss": "3.4.17"
+  }
+}

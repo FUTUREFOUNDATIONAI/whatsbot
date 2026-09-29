@@ -23,12 +23,13 @@ export function handleUnauthorized() {
   window.dispatchEvent(new Event('whatsbot:unauthorized'));
 }
 
-async function request(method, path, body) {
+async function request(method, path, body, signal) {
   const opts = {
     method,
     headers: _authHeaders({ 'Content-Type': 'application/json' }),
   };
   if (body) opts.body = JSON.stringify(body);
+  if (signal) opts.signal = signal;
   const res = await fetch(`${BASE}${path}`, opts);
   if (res.status === 401) {
     localStorage.removeItem('whatsbot_token');
@@ -142,9 +143,27 @@ export async function getUnreadCount() {
   return request('GET', '/api/contacts/unread-count');
 }
 
-export async function getContact(phone, markRead = true) {
-  const qs = markRead ? '' : '?mark_read=false';
-  return request('GET', `/api/contacts/${encodeURIComponent(phone)}${qs}`);
+// `limit` asks for one page of history (newest first window) instead of the
+// whole conversation; `around` centers that page on a message id (search hit).
+export async function getContact(phone, markRead = true, { limit = null, around = null, signal = undefined } = {}) {
+  const params = [];
+  if (!markRead) params.push('mark_read=false');
+  if (limit != null) params.push(`limit=${encodeURIComponent(limit)}`);
+  if (around != null) params.push(`around=${encodeURIComponent(around)}`);
+  const qs = params.length ? `?${params.join('&')}` : '';
+  return request('GET', `/api/contacts/${encodeURIComponent(phone)}${qs}`, undefined, signal);
+}
+
+// One page of an already-open conversation: pass `before` / `after` / `around`
+// (a message id, the `_id` of a loaded message) or none for the newest page.
+export async function getContactMessages(phone, { before = null, after = null, around = null, limit = null } = {}) {
+  const params = [];
+  if (before != null) params.push(`before=${encodeURIComponent(before)}`);
+  if (after != null) params.push(`after=${encodeURIComponent(after)}`);
+  if (around != null) params.push(`around=${encodeURIComponent(around)}`);
+  if (limit != null) params.push(`limit=${encodeURIComponent(limit)}`);
+  const qs = params.length ? `?${params.join('&')}` : '';
+  return request('GET', `/api/contacts/${encodeURIComponent(phone)}/messages${qs}`);
 }
 
 export async function deleteContact(phone) {

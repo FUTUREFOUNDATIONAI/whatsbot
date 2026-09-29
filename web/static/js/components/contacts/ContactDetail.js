@@ -1,5 +1,5 @@
 import { h } from 'preact';
-import { useState, useEffect, useRef } from 'preact/hooks';
+import { useState, useEffect, useLayoutEffect, useRef } from 'preact/hooks';
 import htm from 'htm';
 import { sendMessage, retrySend, sendImage, sendAudio, sendDocument, sendPresence, sendPrivateMessage, getGroupMembers, deleteMessage, reactToMessage, generateImprovement } from '../../services/api.js';
 import { SendIcon, BackArrowIcon, DefaultAvatar, GroupAvatar, EmojiIcon, AttachIcon, MicIcon, SingleCheckIcon, DoubleCheckIcon, ClockIcon, FailedIcon, RetryIcon, StopIcon } from './icons.js';
@@ -26,7 +26,7 @@ function myReaction(message) {
 
 // ── Contact Detail (WhatsApp Web chat panel) ─────────────────────
 
-export function ContactDetail({ phone, onBack, messages, info, contact, onAvatarClick, contactTyping, setContactData, globalTags, groupParticipantsChanged = null, sandbox = false, api = null, scrollToMsg = null, onScrolledToMsg = null, onOpenParticipant = null }) {
+export function ContactDetail({ phone, onBack, messages, info, contact, onAvatarClick, contactTyping, setContactData, globalTags, groupParticipantsChanged = null, sandbox = false, api = null, scrollToMsg = null, onScrolledToMsg = null, onOpenParticipant = null, loadingOlder = false, loadingNewer = false, onLoadOlder = null, onLoadNewer = null, onJumpToMessage = null, onJumpToLatest = null }) {
   // Effective send API. Sandbox injects local (no-GOWA) endpoints; the contact
   // chat uses the real ones.
   const _api = {
@@ -76,12 +76,24 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
   const recordTimerRef = useRef(null);
   const presenceTimerRef = useRef(null);
 
-  // Remember a message to focus (e.g. opened from a search hit) until it renders,
-  // so the messages-driven scroll below jumps to it instead of to the bottom.
-  const pendingScrollRef = useRef(null);
-  useEffect(() => {
-    pendingScrollRef.current = scrollToMsg != null ? String(scrollToMsg) : null;
-  }, [scrollToMsg, phone]);
+  // ── Scrolling over a paged history ─────────────────────────────
+  // `messages` is a window over the conversation. What changed decides how the
+  // view must move:
+  //   - older page prepended  -> keep the same bubble under the cursor
+  //   - message appended      -> follow it to the bottom (live conversation)
+  //   - window replaced       -> focus the requested message, or go to the bottom
+  //   - in-place update       -> (status tick, reaction) leave the scroll alone
+  //                              unless the user is already at the bottom
+  const hasMoreBefore = !!(contact && contact.has_more_before);
+  const hasMoreAfter = !!(contact && contact.has_more_after);
+  const scrollState = useRef({ phone: null, firstKey: null, lastKey: null, len: 0 });
+  const olderAnchor = useRef(null);   // {height, top} captured when an older page was requested
+  const fillStopped = useRef(false);  // an automatic older-page fetch failed: wait for the user to scroll
+  // True while the reader is at the end of the conversation. Images and videos
+  // that finish loading grow the content afterwards, so the view is re-pinned to
+  // the bottom until the reader scrolls up on purpose.
+  const stickBottom = useRef(true);
+  const lastScrollTop = useRef(0);
 
   // Scroll a message into view and flash it briefly. Returns false if the message
   // isn't rendered (e.g. outside the loaded window). Used by the search-hit jump
@@ -99,19 +111,109 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
     return true;
   }
 
-  useEffect(() => {
-    const target = pendingScrollRef.current;
-    if (target != null) {
+  // Stable per message: index keys would make every bubble look "new" after an
+  // older page is prepended and remount all of them (audio players included).
+  const msgKey = (m, i) => (m._localId || (m._id != null ? `d${m._id}` : `i${i}`));
+  const keyOf = (m) => (m ? (m._id != null ? `d${m._id}` : (m._localId ? `l${m._localId}` : null)) : null);
+
+  useLayoutEffect(() => {
+    const el = chatRef.current;
+    if (!el) return;
+    const prev = scrollState.current;
+    const first = messages && messages[0];
+    const last = messages && messages[messages.length - 1];
+    const firstKey = keyOf(first);
+    const lastKey = keyOf(last);
+    const sameChat = prev.phone === phone;
+    scrollState.current = { phone, firstKey, lastKey, len: messages ? messages.length : 0 };
+
+    const target = scrollToMsg != null ? String(scrollToMsg) : null;
+    if (target != null && messages && messages.length > 0) {
       if (focusMessage(target)) {
-        pendingScrollRef.current = null;
+        stickBottom.current = false;   // reading an old message: media loading must not yank the view
         if (onScrolledToMsg) onScrolledToMsg();
+        return;
       }
-      // Either handled, or the target isn't rendered yet — in both cases don't
-      // fall through to the bottom-scroll (wait for the next messages update).
+      // Not in the rendered window (deleted, or the server fell back to the
+      // newest page): give up instead of blocking the scroll forever.
+      if (onScrolledToMsg) onScrolledToMsg();
+    }
+
+    if (olderAnchor.current && sameChat && prev.firstKey && firstKey && prev.firstKey !== firstKey
+        && messages.some(m => keyOf(m) === prev.firstKey)) {
+      // Older messages were prepended (the anchor is only set by requestOlder, so a
+      // window replaced by "latest messages" that merely overlaps is not mistaken
+      // for it): hold the view on the bubble that was on top.
+      const a = olderAnchor.current;
+      olderAnchor.current = null;
+      stickBottom.current = false;
+      el.scrollTop = el.scrollHeight - a.height + a.top;
       return;
     }
-    if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
-  }, [messages]);
+    const appended = sameChat && lastKey !== prev.lastKey && (messages ? messages.length : 0) > prev.len;
+    // Paging forward through old history appends a page at the bottom: that is
+    // not a new message, so the view must stay where the user is reading.
+    if (appended && hasMoreAfter) return;
+    const inPlace = sameChat && firstKey === prev.firstKey && lastKey === prev.lastKey
+      && (messages ? messages.length : 0) === prev.len;
+    if (inPlace) {
+      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
+      if (!nearBottom) return;
+    } else if (!appended && hasMoreAfter) {
+      // A page far from the live edge (jump): start at its top, not the bottom.
+      stickBottom.current = false;
+      el.scrollTop = 0;
+      return;
+    }
+    el.scrollTop = el.scrollHeight;
+    stickBottom.current = true;
+  }, [messages, scrollToMsg, phone]);
+
+  // Media finishing its load changes the layout below the reader.
+  function keepBottom() {
+    const el = chatRef.current;
+    if (el && stickBottom.current && !hasMoreAfter) el.scrollTop = el.scrollHeight;
+  }
+
+  // Ask for the older page when the user reaches the top; remember where the
+  // view was so the layout effect above can restore it after the prepend.
+  function requestOlder() {
+    const el = chatRef.current;
+    if (!el || !onLoadOlder || loadingOlder || !hasMoreBefore) return;
+    olderAnchor.current = { height: el.scrollHeight, top: el.scrollTop };
+    Promise.resolve(onLoadOlder()).then((added) => {
+      if (!added) { olderAnchor.current = null; fillStopped.current = true; }
+    });
+  }
+
+  function requestNewer() {
+    if (!onLoadNewer || loadingNewer || !hasMoreAfter) return;
+    onLoadNewer();
+  }
+
+  function handleChatScroll(e) {
+    const el = e.currentTarget;
+    fillStopped.current = false;   // a real scroll re-arms the automatic fetches
+    // Reaching the end pins the view. Only moving UP unpins it: content that
+    // grows below (an image finishing its load) also increases the distance to
+    // the end, and that must not be mistaken for the reader scrolling away.
+    const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (gap < 80) stickBottom.current = true;
+    else if (el.scrollTop < lastScrollTop.current - 2) stickBottom.current = false;
+    lastScrollTop.current = el.scrollTop;
+    if (el.scrollTop < 320) requestOlder();
+    else if (el.scrollHeight - el.scrollTop - el.clientHeight < 320) requestNewer();
+  }
+
+  // A short window (few tall media, big screen) may not scroll at all, so the
+  // scroll handler above would never fire: fill the viewport with older pages.
+  useEffect(() => {
+    const el = chatRef.current;
+    if (el && hasMoreBefore && !loadingOlder && !fillStopped.current
+        && el.scrollHeight <= el.clientHeight + 40) requestOlder();
+  }, [messages, hasMoreBefore, loadingOlder]);
+
+  useEffect(() => { fillStopped.current = false; stickBottom.current = true; }, [phone]);
 
   useEffect(() => {
     setInput('');
@@ -353,8 +455,18 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
 
   // Locate a quoted message in the current thread by its GOWA msg_id.
   function findQuoted(msgId) {
-    if (!msgId || !messages) return null;
-    return messages.find(m => m.msg_id === msgId) || null;
+    if (!msgId) return null;
+    const inWindow = messages && messages.find(m => m.msg_id === msgId);
+    if (inWindow) return inWindow;
+    // Original outside the loaded window: the server ships it alongside the page.
+    return (contact && contact.quoted && contact.quoted[msgId]) || null;
+  }
+
+  // Clicking a quote: focus it when rendered, otherwise load the page around it.
+  async function jumpToQuoted(qmsg) {
+    if (!qmsg || qmsg._id == null) return;
+    if (focusMessage(qmsg._id, { smooth: true })) return;
+    if (onJumpToMessage) await onJumpToMessage(qmsg._id);
   }
 
   // Build {senderLabel, senderColor, snippet} for a quoted message, mirroring
@@ -501,6 +613,12 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
     return () => document.removeEventListener('mousedown', onDocClick);
   }, [emojiOpen]);
 
+  // A message the operator sends belongs at the live end of the conversation:
+  // when an old part is on screen, return to the latest messages first.
+  async function ensureLiveEdge() {
+    if (hasMoreAfter && onJumpToLatest) await onJumpToLatest();
+  }
+
   async function handleSend(e) {
     e.preventDefault();
     setMentionMenu(null);
@@ -513,6 +631,7 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
     if (!sandbox) sendPresence(phone, 'stop').catch(() => {});
 
     setInput('');
+    await ensureLiveEdge();
     const localId = `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const msgTs = Date.now() / 1000;
 
@@ -669,6 +788,7 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
     setPendingMedia(null);
     setMediaCaption('');
     setSending(true);
+    await ensureLiveEdge();
 
     const localId = `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const localUrl = media.previewUrl
@@ -844,7 +964,15 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
       </div>
 
       <!-- Chat area with doodle pattern -->
-      <div ref=${chatRef} class="flex-1 min-h-0 overflow-y-auto overscroll-contain wa-scrollbar wa-chat-pattern py-2 px-[4%] lg:px-[7%]">
+      <div ref=${chatRef} onScroll=${handleChatScroll} onLoadCapture=${keepBottom} onLoadedMetadataCapture=${keepBottom} class="flex-1 min-h-0 overflow-y-auto overscroll-contain wa-scrollbar wa-chat-pattern py-2 px-[4%] lg:px-[7%]">
+        ${hasMoreBefore ? html`
+          <div class="flex justify-center py-2">
+            <button type="button" onClick=${requestOlder} disabled=${loadingOlder}
+              class="bg-wa-bg/90 text-wa-secondary text-[12px] rounded-[7.5px] px-[12px] py-[5px] shadow-sm hover:bg-wa-hover disabled:opacity-70">
+              ${loadingOlder ? 'Carregando mensagens anteriores...' : 'Carregar mensagens anteriores'}
+            </button>
+          </div>
+        ` : null}
         ${!messages || messages.length === 0
           ? html`<div class="text-center text-wa-secondary py-8 text-[14px]">
               <span class="bg-wa-bg/80 rounded-lg px-3 py-1.5 text-[12.5px] shadow-sm">Nenhuma mensagem ainda</span>
@@ -862,7 +990,7 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
               const prevTs = i > 0 ? messages[i - 1].ts : null;
               const showDateSep = m.ts && (!prevTs || !isSameDay(prevTs, m.ts));
               const dateSeparator = showDateSep
-                ? html`<div key=${`sep-${m.ts}-${i}`} class="flex justify-center my-[12px]">
+                ? html`<div key=${`sep-${msgKey(m, i)}`} class="flex justify-center my-[12px]">
                     <span class="bg-wa-bg/90 text-wa-secondary text-[12px] font-medium uppercase tracking-wide rounded-[7.5px] px-[12px] py-[5px] shadow-sm">
                       ${formatDateSeparator(m.ts)}
                     </span>
@@ -873,7 +1001,7 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
                 const failed = m._status === 'failed';
                 const pending = m._status === 'sending';
                 return [dateSeparator, html`
-                  <div key=${m._localId || i} data-mid=${m._id} class="flex justify-center mt-[4px]">
+                  <div key=${msgKey(m, i)} data-mid=${m._id} class="flex justify-center mt-[4px]">
                     <div
                       onContextMenu=${(e) => openMsgMenu(e, m, true)}
                       class="group max-w-[75%] rounded-[7.5px] px-[11px] pt-[6px] pb-[7px] text-[13px] leading-[18px] whitespace-pre-wrap relative shadow-sm"
@@ -902,7 +1030,7 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
 
               if (isTranscription) {
                 return [dateSeparator, html`
-                  <div key=${i} data-mid=${m._id} class="flex justify-center mt-[4px]">
+                  <div key=${msgKey(m, i)} data-mid=${m._id} class="flex justify-center mt-[4px]">
                     <div class="max-w-[75%] rounded-[7.5px] px-[10px] pt-[5px] pb-[6px] text-[12.5px] leading-[17px] whitespace-pre-wrap relative"
                          style="background: #2d1b4e; color: #d4bfff; border: 1px solid #4a2d7a;">
                       <span class="flex items-center gap-1 text-[10px] font-semibold mb-[2px] opacity-80">
@@ -920,7 +1048,7 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
 
               if (isSystemNotice) {
                 return [dateSeparator, html`
-                  <div key=${i} class="flex justify-center mt-[4px]">
+                  <div key=${msgKey(m, i)} class="flex justify-center mt-[4px]">
                     <div class="max-w-[75%] rounded-[7.5px] px-[10px] pt-[5px] pb-[6px] text-[12.5px] leading-[17px] whitespace-pre-wrap relative"
                          style="background: #1b2e4e; color: #93c5fd; border: 1px solid #1e40af;">
                       <span class="flex items-center gap-1 text-[10px] font-semibold mb-[2px] opacity-80">
@@ -938,7 +1066,7 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
 
               if (isSystem) {
                 return [dateSeparator, html`
-                  <div key=${m._localId || i} data-mid=${m._id} class="flex justify-center mt-[4px]">
+                  <div key=${msgKey(m, i)} data-mid=${m._id} class="flex justify-center mt-[4px]">
                     <div
                       onContextMenu=${(e) => openMsgMenu(e, m, false)}
                       class="group max-w-[75%] rounded-[7.5px] px-[11px] pt-[6px] pb-[7px] text-[13px] leading-[18px] whitespace-pre-wrap relative shadow-sm"
@@ -967,7 +1095,7 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
 
               if (isToolCall) {
                 return [dateSeparator, html`
-                  <div key=${i} class="flex justify-center mt-[4px]">
+                  <div key=${msgKey(m, i)} class="flex justify-center mt-[4px]">
                     <div class="max-w-[75%] rounded-[7.5px] px-[10px] pt-[5px] pb-[6px] text-[12.5px] leading-[17px] whitespace-pre-wrap relative"
                          style="background: #2d1b0e; color: #fbbf24; border: 1px solid #78350f;">
                       <span class="flex items-center gap-1 text-[10px] font-semibold mb-[2px] opacity-80">
@@ -985,7 +1113,7 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
 
               if (isError) {
                 return [dateSeparator, html`
-                  <div key=${i} class="flex justify-center mt-[4px]">
+                  <div key=${msgKey(m, i)} class="flex justify-center mt-[4px]">
                     <div class="max-w-[85%] rounded-[7.5px] px-[10px] pt-[5px] pb-[6px] text-[12.5px] leading-[17px] whitespace-pre-wrap relative"
                          style="background: #fef2f2; color: #dc2626; border: 1px solid #fecaca;">
                       <span class="flex items-center gap-1 text-[10px] font-semibold mb-[2px] opacity-80">
@@ -1033,7 +1161,7 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
                 : null;
 
               return [dateSeparator, html`
-                <div key=${m._localId || i} data-mid=${m._id} class="flex ${isFromMe ? 'justify-end' : 'justify-start'} ${isFirst ? 'mt-[12px]' : 'mt-[2px]'} ${(m.reactions && Object.keys(m.reactions).length) ? 'mb-[14px]' : ''}">
+                <div key=${msgKey(m, i)} data-mid=${m._id} class="flex ${isFromMe ? 'justify-end' : 'justify-start'} ${isFirst ? 'mt-[12px]' : 'mt-[2px]'} ${(m.reactions && Object.keys(m.reactions).length) ? 'mb-[14px]' : ''}">
                   <div
                     onContextMenu=${(e) => openMsgMenu(e, m, isFromMe)}
                     class="wa-bubble group max-w-[65%] rounded-[7.5px] px-[9px] pt-[6px] pb-[8px] text-[14.2px] leading-[19px] whitespace-pre-wrap relative ${
@@ -1068,7 +1196,7 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
                       const canJump = !!(qmsg && qmsg._id != null);
                       return html`
                         <div
-                          onClick=${canJump ? ((e) => { e.stopPropagation(); focusMessage(qmsg._id, { smooth: true }); }) : null}
+                          onClick=${canJump ? ((e) => { e.stopPropagation(); jumpToQuoted(qmsg); }) : null}
                           class="flex rounded-[4px] overflow-hidden mb-[4px] max-w-full ${canJump ? 'cursor-pointer hover:brightness-95' : ''}"
                           style="background: rgba(0,0,0,0.06);"
                           title=${canJump ? 'Ir para a mensagem' : ''}
@@ -1195,6 +1323,14 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
               `];
             })
         }
+        ${hasMoreAfter ? html`
+          <div class="flex justify-center py-2 sticky bottom-0">
+            <button type="button" onClick=${() => onJumpToLatest && onJumpToLatest()}
+              class="bg-wa-teal text-white text-[12px] font-medium rounded-full px-[14px] py-[6px] shadow-md hover:opacity-90">
+              ${loadingNewer ? 'Carregando...' : 'Ir para as mensagens mais recentes'}
+            </button>
+          </div>
+        ` : null}
       </div>
 
       <!-- Hidden file inputs for image / document upload -->

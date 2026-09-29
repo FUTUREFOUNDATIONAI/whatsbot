@@ -18,6 +18,23 @@ from server.routes.sandbox import SANDBOX_CONTACT_PREFIX
 
 logger = logging.getLogger(__name__)
 
+# Group send permission is looked up in GOWA when a group is opened. It rarely
+# changes (the webhook also refreshes it on every group message), so a short
+# cache keeps re-opening a group from paying the round trip each time.
+_CAN_SEND_TTL = 60.0
+_CAN_SEND_TIMEOUT = 4.0
+_CAN_SEND_BACKOFF = 15.0
+_can_send_cache: dict[str, tuple[float, bool]] = {}
+# When a lookup fails or times out its worker thread keeps running until GOWA's
+# own HTTP timeout. Without a pause, every re-open of a group would start
+# another blocked thread, so failures are remembered briefly.
+_can_send_failed_at: dict[str, float] = {}
+
+# History paging: the newest page is what opening a conversation needs; older
+# and newer pages stream in on demand (scroll, jump to a search hit or quote).
+DEFAULT_PAGE_LIMIT = 100
+MAX_PAGE_LIMIT = 300
+
 
 def _is_sandbox_contact(phone: str) -> bool:
     """True when the contact is a sandbox/test number — operator sends to it
@@ -185,9 +202,54 @@ def register_routes(app, deps):
         contact = await asyncio.to_thread(contact_repo.get_by_phone, canonical)
         return _ok({"exists": contact is not None, "contact": contact})
 
+    async def _group_can_send(phone: str) -> bool | None:
+        """Whether the bot may send in group ``phone`` (None when unknown).
+
+        Cached briefly and bounded by a timeout: a slow GOWA must never hold
+        the conversation hostage, the stored value is used instead."""
+        cached = _can_send_cache.get(phone)
+        if cached and (time.time() - cached[0]) < _CAN_SEND_TTL:
+            return cached[1]
+        if (time.time() - _can_send_failed_at.get(phone, 0.0)) < _CAN_SEND_BACKOFF:
+            return None
+        try:
+            can_send = await asyncio.wait_for(
+                asyncio.to_thread(gowa_client.can_bot_send_in_group, phone, state.bot_phone),
+                timeout=_CAN_SEND_TIMEOUT)
+        except Exception as e:
+            _can_send_failed_at[phone] = time.time()
+            logger.warning("[Contact] Failed to check group send permission (%s): %s",
+                           type(e).__name__, e)
+            return None
+        _can_send_failed_at.pop(phone, None)
+        _can_send_cache[phone] = (time.time(), bool(can_send))
+        return bool(can_send)
+
+    def _page_payload(contact_id: int, page: dict) -> dict:
+        """Client-facing shape of one history page (+ quoted originals)."""
+        return {
+            "messages": page["messages"],
+            "has_more_before": page["has_more_before"],
+            "has_more_after": page["has_more_after"],
+            "quoted": message_repo.get_quoted(contact_id, page["messages"]),
+        }
+
     @app.get("/api/contacts/{phone}")
-    async def get_contact(phone: str, mark_read: bool = True):
-        """Return full contact data including conversation history."""
+    async def get_contact(phone: str, mark_read: bool = True,
+                          limit: int | None = None, around: int | None = None):
+        """Return full contact data including conversation history.
+
+        Without ``limit`` the whole history is returned (legacy shape). With
+        ``limit`` only the newest page comes back (or the page around message
+        id ``around``), plus ``has_more_before``/``has_more_after`` so the
+        client can fetch the rest from ``/messages``."""
+        if limit is not None:
+            limit = max(1, min(int(limit), MAX_PAGE_LIMIT))
+        # Start the group permission lookup right away so it overlaps the DB work.
+        send_task = None
+        if state.bot_phone and "@g.us" in phone:
+            send_task = asyncio.create_task(_group_can_send(phone))
+
         def _load():
             data = contact_repo.get_full_contact(phone)
             if data is None:
@@ -209,34 +271,83 @@ def register_routes(app, deps):
                     agent_handler._contacts[phone].unread_count = 0
                     agent_handler._contacts[phone].unread_ai_count = 0
             # Load messages
-            data["messages"] = message_repo.get_all(contact_id)
+            if limit is None:
+                data["messages"] = message_repo.get_all(contact_id)
+                data["has_more_before"] = False
+                data["has_more_after"] = False
+                data["quoted"] = {}
+            else:
+                page = message_repo.get_page(contact_id, limit, around=around)
+                if around is not None and not page["found"]:
+                    # Unknown/foreign message id: fall back to the newest page.
+                    page = message_repo.get_page(contact_id, limit)
+                data.update(_page_payload(contact_id, page))
             # Load usage for the full response
             data["usage"] = []
             return data, msg_ids
-        data, msg_ids = await asyncio.to_thread(_load)
+        try:
+            data, msg_ids = await asyncio.to_thread(_load)
+        except BaseException:
+            if send_task is not None:
+                send_task.cancel()
+            raise
         if data is None:
+            if send_task is not None:
+                send_task.cancel()
             return _err("Contato não encontrado.", status=404)
         if msg_ids:
             asyncio.create_task(_send_read_receipts(phone, msg_ids))
         # Check group send permissions (fresh check on every contact load)
         if data.get("is_group") and state.bot_phone:
-            try:
-                can_send = await asyncio.to_thread(
-                    gowa_client.can_bot_send_in_group, phone, state.bot_phone)
-                if data.get("can_send", True) != can_send:
-                    await asyncio.to_thread(
-                        contact_repo.update, data["id"], can_send=1 if can_send else 0)
-                    data["can_send"] = can_send
-                    if phone in agent_handler._contacts:
-                        agent_handler._contacts[phone].can_send = can_send
-            except Exception as e:
-                logger.warning("[Contact] Failed to check group send permission: %s", e)
+            can_send = await (send_task if send_task is not None else _group_can_send(phone))
+            if can_send is not None:
+                try:
+                    if data.get("can_send", True) != can_send:
+                        await asyncio.to_thread(
+                            contact_repo.update, data["id"], can_send=1 if can_send else 0)
+                        data["can_send"] = can_send
+                        if phone in agent_handler._contacts:
+                            agent_handler._contacts[phone].can_send = can_send
+                except Exception as e:
+                    logger.warning("[Contact] Failed to store group send permission: %s", e)
+        elif send_task is not None:
+            send_task.cancel()
         # Opening a conversation triggers a best-effort avatar refresh in the
         # background; if the photo changed, an `avatar_updated` WS event updates
         # it live. Include the current version for immediate cache-busting.
         data["avatar_v"] = avatar_version(settings, phone)
         asyncio.create_task(refresh_and_broadcast(deps, phone))
         return _ok(data)
+
+    @app.get("/api/contacts/{phone}/messages")
+    async def get_contact_messages(phone: str, before: int | None = None,
+                                   after: int | None = None, around: int | None = None,
+                                   limit: int = DEFAULT_PAGE_LIMIT):
+        """One page of a conversation's history, ascending by (ts, id).
+
+        Pass at most one of ``before`` (older than that message id), ``after``
+        (newer than it) or ``around`` (that message with context on both
+        sides). No cursor returns the newest page. Read-only: it never marks
+        anything as read and never creates a contact."""
+        if sum(v is not None for v in (before, after, around)) > 1:
+            return _err("Use apenas um entre 'before', 'after' e 'around'.")
+        limit = max(1, min(int(limit), MAX_PAGE_LIMIT))
+
+        def _load():
+            contact = contact_repo.get_by_phone(phone)
+            if contact is None:
+                return None, None
+            page = message_repo.get_page(
+                contact["id"], limit, before=before, after=after, around=around)
+            if not page["found"]:
+                return contact, None
+            return contact, _page_payload(contact["id"], page)
+        contact, payload = await asyncio.to_thread(_load)
+        if contact is None:
+            return _err("Contato não encontrado.", status=404)
+        if payload is None:
+            return _err("Mensagem não encontrada.", status=404)
+        return _ok(payload)
 
     @app.delete("/api/contacts/{phone}")
     async def delete_contact(phone: str):
