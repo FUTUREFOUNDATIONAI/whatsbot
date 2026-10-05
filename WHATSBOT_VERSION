@@ -1,6 +1,10 @@
 {
-  "version": "0.2.8",
+  "version": "0.2.9",
   "changelog": [
+    {
+      "version": "0.2.9",
+      "description": "- A IA agora aproveita melhor o cache do modelo: conversas com instruções longas ficam bem mais baratas e rápidas depois da primeira mensagem\n- A tela Custos mostra quanto do texto enviado à IA foi reaproveitado do cache e a economia estimada, inclusive por contato\n- O valor passou a se chamar \"Custo estimado\" e já considera o desconto do cache; o valor cobrado pelo provedor pode variar um pouco\n- Períodos anteriores a esta versão aparecem sem dado de cache (\"—\") e não entram na porcentagem"
+    },
     {
       "version": "0.2.8",
       "description": "- Conversas abrem bem mais rápido: primeiro aparecem as mensagens mais recentes e as antigas carregam ao rolar para cima\n- A busca continua procurando em todo o histórico e abre direto na mensagem encontrada, inclusive nas antigas\n- Clicar em uma mensagem citada leva até a original, mesmo que seja antiga\n- Áudios e fotos de perfil só carregam quando chegam perto da tela\n- O visual passou a usar estilos pré-gerados, sem recalcular a tela no navegador; telas de plugins continuam funcionando\n- Clicar no nome de quem falou em um grupo abre a conversa com essa pessoa\n- O produto passou a se chamar WhatsBot-Lite nas telas e mensagens"
