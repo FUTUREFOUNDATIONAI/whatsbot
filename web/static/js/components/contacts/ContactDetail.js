@@ -8,6 +8,7 @@ import { formatWhatsApp } from '../../utils/formatWhatsApp.js';
 import { AudioPlayer } from './AudioPlayer.js';
 import { MessageContextMenu, CopyIcon, TrashIcon, ReplyIcon, ImproveIcon, copyToClipboard } from './MessageContextMenu.js';
 import { EmojiPicker } from './EmojiPicker.js';
+import { Slot } from '../../plugins/slots.js';
 
 const html = htm.bind(h);
 
@@ -961,6 +962,8 @@ export function ContactDetail({ phone, onBack, messages, info, contact, onAvatar
             : info && info.name ? html`<div class="text-wa-secondary text-[13px] leading-tight">${phone}</div>` : null
           }
         </div>
+        <!-- Plugin actions. The right margin clears the fixed gear button (36px + 12px). -->
+        ${!sandbox ? html`<${Slot} name="chat.header.actions" ctx=${{ phone, contact, info, isGroup, rawName }} style="margin-right:44px" />` : null}
       </div>
 
       <!-- Chat area with doodle pattern -->

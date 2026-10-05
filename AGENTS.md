@@ -660,7 +660,7 @@ Plugins são extensões opcionais isoladas em `storages/plugins/<id>/` (volume D
 
 ```
 storages/plugins/<id>/
-├── plugin.yaml              # manifest (id, name, version, whatsbot_api_version, entry, screens)
+├── plugin.yaml              # manifest (id, name, version, whatsbot_api_version, entry, screens, frontend_extends?)
 ├── __init__.py
 ├── tools.py                 # CORE_TOOLS = [(schema, executor), ...]   (opcional)
 ├── prompts.py               # PROMPT_FRAGMENTS = [callable, ...]        (opcional)
@@ -707,6 +707,20 @@ Referências (na Loja de Plugins, ver "Plugins de exemplo"): `auto_signature` (s
 
 `PluginScreen` faz `import(screen.component)` dinâmico e passa `apiBase = "/api/plugins/<id>"` como prop. Importmap em `web/index.html` cobre `preact`, `preact/hooks`, `htm` — plugin usa os mesmos sem bundle. Screen custom pode importar utilitários do core por URL absoluta (ex: `import { playNotificationSound } from '/static/js/utils/notifications.js'`).
 
+**Extensão de UI do core por slots (API 1.3)**: além de screens próprias, um plugin pode preencher pontos
+nomeados da interface do core. O manifest declara `frontend_extends: /plugins/<id>/static/<arquivo>.js` (o
+caminho PRECISA começar com `/plugins/<id>/static/`, mesma regra do `component` das screens; o parser
+recusa o resto). `/api/plugins/manifest` devolve o campo e o `app.js` chama `loadPluginExtensions()`
+([web/static/js/plugins/slots.js](web/static/js/plugins/slots.js)), que faz `import()` do módulo uma vez por
+carga de página e chama o `default export` com `{pluginId, apiBase, addSlot}`. O plugin registra um
+componente Preact com `addSlot(nome, Componente)`. Slot disponível hoje: `chat.header.actions` — barra de
+cabeçalho da conversa em `ContactDetail`, fora do sandbox; o componente recebe
+`{phone, contact, info, isGroup, rawName}` como props. Slot vazio não renderiza nada (instalação sem plugins
+fica idêntica); módulo que falha ao carregar é descartado com `console.warn`, e cada componente tem seu
+próprio error boundary, então um plugin quebrado nunca derruba a conversa. Para criar um slot novo no core,
+renderize `<Slot name="..." ctx=${{...}} />` no ponto desejado e documente o nome e o `ctx` aqui e em
+[agent/PLUGIN_CREATOR.md](agent/PLUGIN_CREATOR.md).
+
 Telas de plugin recebem toda a largura útil do painel. O componente decide apenas a organização interna;
 não volte a limitar o wrapper compartilhado com `max-w-5xl`. A referência [agent/PLUGIN_CREATOR.md](agent/PLUGIN_CREATOR.md)
 contém o contrato visual genérico usado por modelos baratos e o validador do Chat confere largura,
@@ -718,7 +732,7 @@ a tela de um plugin específico.
 
 - **`id`**: snake_case, regex `^[a-z][a-z0-9_]{0,31}$`. Vira o prefixo de tabela e o nome do pacote Python.
 - **Tabelas**: SEMPRE `plugin_<id>_<nome>`. O migrator rejeita o contrário com erro claro.
-- **`whatsbot_api_version`**: range semver no manifest (ex: `">=1.0,<2.0"`). Versão atual em `plugins/manifest.WHATSBOT_API_VERSION` — hoje **`1.2.0`**. A 1.2 adiciona `plugins.context.send_whatsapp_message()` e `get_plugin_setting()`; plugin que use esses helpers declara `">=1.2,<2.0"`. Os filters de provisioning continuam disponíveis desde 1.1.
+- **`whatsbot_api_version`**: range semver no manifest (ex: `">=1.0,<2.0"`). Versão atual em `plugins/manifest.WHATSBOT_API_VERSION` — hoje **`1.3.0`**. A 1.3 adiciona `frontend_extends` no manifest (slots de UI do core, ver "Frontend dinâmico"); plugin que use declara `">=1.3,<2.0"`. A 1.2 adiciona `plugins.context.send_whatsapp_message()` e `get_plugin_setting()`; plugin que use esses helpers declara `">=1.2,<2.0"`. Os filters de provisioning continuam disponíveis desde 1.1.
 - **Permissions**: declaradas no manifest mas **não enforced no MVP** — informativo apenas.
 - **Configuração no próprio plugin**: opções de um plugin vão SEMPRE na aba de configuração dele (settings declarativas e/ou screen `config: true`), NUNCA numa aba nova do painel de Configurações do core. Ver "Onde fica a configuração de um plugin".
 - **Settings**: chaves persistem com prefixo `plugin.<id>.`. Plugin nunca grava direto na tabela `config` sem esse prefixo.

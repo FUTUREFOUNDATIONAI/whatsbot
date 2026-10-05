@@ -9,6 +9,7 @@ import { Executions } from './components/Executions.js';
 import { LoginScreen } from './components/LoginScreen.js';
 import { PluginsManager } from './components/PluginsManager.js';
 import { PluginScreen } from './components/PluginScreen.js';
+import { loadPluginExtensions } from './plugins/slots.js';
 import { ToolsManager } from './components/ToolsManager.js';
 import { Chat } from './components/Chat.js';
 import { SetupWizard } from './components/SetupWizard.js';
@@ -312,6 +313,7 @@ function App({ onLogout, hasPassword }) {
       .then(r => r.json())
       .then(res => {
         if (!res || !res.ok) return;
+        loadPluginExtensions(res.data.plugins);
         const screens = (res.data.plugins || []).flatMap(p =>
           (p.screens || [])
             .filter(s => !s.config)  // config screens live in the Plugins tab, not the gear menu
