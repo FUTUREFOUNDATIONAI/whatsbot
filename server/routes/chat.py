@@ -27,6 +27,7 @@ from fastapi import File, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from agno.models.message import Message
 
+from agent.costing import current_model_pricing, number
 from agent.plugin_chat import build_agent, history_messages, metrics_dict
 from db.repositories import chat_repo, plugin_repo
 from plugins.manifest import load_manifest
@@ -141,38 +142,8 @@ def _format_discovery_response(content: str) -> str:
     return text
 
 
-def _number(value) -> float:
-    try:
-        return float(value or 0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _current_model_pricing(pricing: dict, now: datetime | None = None) -> dict:
-    """Apply an OpenRouter-compatible time-of-day pricing override."""
-    selected = dict(pricing or {})
-    instant = now or datetime.now(timezone.utc)
-    weekday = instant.strftime("%A").lower()
-    hhmm = instant.hour * 100 + instant.minute
-    for override in pricing.get("overrides", []) if isinstance(pricing, dict) else []:
-        days = [str(day).lower() for day in override.get("utc_days", [])]
-        if days and weekday not in days:
-            continue
-        start = int(override.get("utc_start", 0) or 0)
-        end = int(override.get("utc_end", 0) or 0)
-        if start == end:
-            in_window = True
-        elif end == 0:
-            in_window = hhmm >= start
-        elif start < end:
-            in_window = start <= hhmm < end
-        else:
-            in_window = hhmm >= start or hhmm < end
-        if in_window:
-            selected.update(override)
-            break
-    return selected
-
+_number = number
+_current_model_pricing = current_model_pricing
 
 def _add_cost_estimate(
     metrics: dict, model_id: str, pricing: dict, at: datetime | None = None,

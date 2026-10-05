@@ -890,6 +890,7 @@ python tests/test_endpoints.py
 python tests/test_gowa_update.py   # updater do GOWA (offline, release falsa via file://)
 python tests/test_gowa_proxy.py    # proxy do GOWA (offline, proxies SOCKS5/HTTP falsos em socket)
 python tests/test_provisioning_target.py  # par destino+frase do provisionamento + os dois seams (offline)
+python tests/test_llm_costing.py  # cache do LLM: session id, header x-session-id, estimate_cost com desconto, usage_repo (offline)
 ```
 
 Os testes criam um banco temporário (SQLite por default; setar `WHATSBOT_TEST_DB_URL=postgresql+psycopg://...` para rodar contra Postgres), inserem dados de teste (contatos, mensagens, tags, usage), e validam ~250 checagens (helper `check(...)`) cobrindo:

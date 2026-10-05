@@ -167,6 +167,8 @@ Em **Painel → Agente → Comportamento**, use **Marcar conversas** para marcar
 
 A página **Custos** mostra o consumo e os valores estimados das chamadas de IA. No Chat, o resumo de tokens, cache, custo da resposta e total da conversa aparece quando a execução termina.
 
+O valor aparece como **Custo estimado** porque é calculado pelo preço listado de cada modelo; o valor realmente cobrado pelo provedor pode ser um pouco diferente. O cartão **Cache da entrada** mostra quanto do texto enviado à IA foi reaproveitado de chamadas anteriores, o que sai mais barato, e a **Economia estimada** que isso gerou. A tabela por contato tem a coluna **Cache**. Períodos anteriores a esse recurso não têm dado de cache e aparecem com "—"; eles não entram na porcentagem.
+
 [Abrir custos de IA]({{base_url}}/costs)
 
 ### Ver o que aconteceu durante uma resposta

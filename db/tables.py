@@ -108,6 +108,9 @@ usage = Table(
     Column("total_tokens", Integer, nullable=False, server_default="0"),
     Column("cost_usd", Float, nullable=False, server_default="0.0"),
     Column("ts", Float, nullable=False),
+    # NULL = not measured (rows from before cache tracking); 0 = measured, no cache hit.
+    Column("cached_tokens", Integer, nullable=True),
+    Column("saved_usd", Float, nullable=True),
 )
 Index("idx_usage_contact_ts", usage.c.contact_id, usage.c.ts)
 Index("idx_usage_ts", usage.c.ts)

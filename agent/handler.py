@@ -13,6 +13,7 @@ from pathlib import Path
 from openai import OpenAI, AsyncOpenAI
 
 from agent.memory import ContactMemory, TagRegistry, _build_image_content
+from agent.costing import estimate_cost
 from agent.tools import CORE_TOOLS
 from agent import group_mentions, agno_engine, agent_factory
 from config.settings import LLM_API_BASE_URL
@@ -122,6 +123,8 @@ class AgentHandler:
         self._client: OpenAI | None = None
         self._async_client: AsyncOpenAI | None = None
         self.pricing_fn = pricing_fn
+        # Full pricing dict (cache prices, time-of-day overrides); injected by routes/usage.
+        self.pricing_details_fn = None
         self.split_messages: bool = True
         self.tag_registry = TagRegistry()
 
@@ -336,6 +339,19 @@ class AgentHandler:
             return _FALLBACK_REPLY_APOS_VAZAMENTO
         return reply
 
+    def _estimate_cost(self, model: str, prompt_tokens: int, completion_tokens: int,
+                       cached_tokens: int = 0) -> tuple[float, float]:
+        """Return ``(cost_usd, saved_usd)`` using the listed price (an estimate)."""
+        details = None
+        if self.pricing_details_fn:
+            details = self.pricing_details_fn(model)
+        if details:
+            return estimate_cost(details, prompt_tokens, completion_tokens, cached_tokens)
+        if self.pricing_fn:
+            prompt_price, completion_price = self.pricing_fn(model)
+            return (prompt_tokens * prompt_price) + (completion_tokens * completion_price), 0.0
+        return 0.0, 0.0
+
     def _record_usage(self, phone: str, call_type: str, model: str, response) -> None:
         """Extract usage from an OpenAI-compatible response and record it."""
         try:
@@ -345,15 +361,16 @@ class AgentHandler:
             prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
             completion_tokens = getattr(usage, "completion_tokens", 0) or 0
             total_tokens = getattr(usage, "total_tokens", 0) or 0
-            cost_usd = 0.0
-            if self.pricing_fn:
-                prompt_price, completion_price = self.pricing_fn(model)
-                cost_usd = (prompt_tokens * prompt_price) + (completion_tokens * completion_price)
+            details = getattr(usage, "prompt_tokens_details", None)
+            cached_tokens = getattr(details, "cached_tokens", 0) or 0
+            cost_usd, saved_usd = self._estimate_cost(
+                model, prompt_tokens, completion_tokens, cached_tokens)
             if phone:
                 contact = self._get_contact(phone)
-                contact.add_usage(call_type, model, prompt_tokens, completion_tokens, total_tokens, cost_usd)
-            logger.debug("Usage recorded for %s: %s %s tokens=%d cost=%.6f",
-                         phone, call_type, model, total_tokens, cost_usd)
+                contact.add_usage(call_type, model, prompt_tokens, completion_tokens, total_tokens,
+                                  cost_usd, cached_tokens=cached_tokens, saved_usd=saved_usd)
+            logger.debug("Usage recorded for %s: %s %s tokens=%d cached=%d cost=%.6f saved=%.6f",
+                         phone, call_type, model, total_tokens, cached_tokens, cost_usd, saved_usd)
         except Exception as e:
             logger.warning("Failed to record usage: %s", e)
         # Trigger a low-balance check after every billable call. The monitor
@@ -366,7 +383,7 @@ class AgentHandler:
 
     def _record_usage_tokens(self, phone: str, call_type: str, model: str,
                              prompt_tokens: int, completion_tokens: int,
-                             total_tokens: int) -> None:
+                             total_tokens: int, cached_tokens: int = 0) -> None:
         """Record usage from explicit token counts (AGNO metrics path).
 
         Mirrors ``_record_usage`` but takes raw token numbers instead of an
@@ -374,15 +391,15 @@ class AgentHandler:
         ``RunMetrics`` rather than a ``response.usage`` attribute.
         """
         try:
-            cost_usd = 0.0
-            if self.pricing_fn:
-                prompt_price, completion_price = self.pricing_fn(model)
-                cost_usd = (prompt_tokens * prompt_price) + (completion_tokens * completion_price)
+            cost_usd, saved_usd = self._estimate_cost(
+                model, prompt_tokens, completion_tokens, cached_tokens)
             contact = self._get_contact(phone)
             contact.add_usage(call_type, model, prompt_tokens, completion_tokens,
-                              total_tokens, cost_usd)
-            logger.debug("Usage recorded for %s: %s %s tokens=%d cost=%.6f",
-                         phone, call_type, model, total_tokens, cost_usd)
+                              total_tokens, cost_usd, cached_tokens=cached_tokens,
+                              saved_usd=saved_usd)
+            ratio = (cached_tokens / prompt_tokens) if prompt_tokens else 0.0
+            logger.debug("Usage recorded for %s: %s %s tokens=%d cached=%d ratio=%.2f cost=%.6f saved=%.6f",
+                         phone, call_type, model, total_tokens, cached_tokens, ratio, cost_usd, saved_usd)
         except Exception as e:
             logger.warning("Failed to record usage: %s", e)
         try:
@@ -1137,6 +1154,7 @@ class AgentHandler:
                     usage_dict.get("prompt_tokens", 0),
                     usage_dict.get("completion_tokens", 0),
                     usage_dict.get("total_tokens", 0),
+                    usage_dict.get("cached_tokens", 0),
                 )
 
             if save_response:
@@ -1267,6 +1285,7 @@ class AgentHandler:
                     usage_dict.get("prompt_tokens", 0),
                     usage_dict.get("completion_tokens", 0),
                     usage_dict.get("total_tokens", 0),
+                    usage_dict.get("cached_tokens", 0),
                 )
 
             if save_response:

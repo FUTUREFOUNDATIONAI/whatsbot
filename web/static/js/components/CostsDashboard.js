@@ -29,6 +29,18 @@ function formatTokens(n) {
   return String(n);
 }
 
+// Share of the input that came from the prompt cache, only over calls where the
+// cache was measured (older history has no data). null = nothing to show.
+function cachePct(stats) {
+  const base = stats?.cache_measured_prompt_tokens || 0;
+  if (!base) return null;
+  return ((stats.cached_tokens || 0) / base) * 100;
+}
+
+function formatPct(pct) {
+  return pct === null || pct === undefined ? '—' : `${pct.toFixed(0)}%`;
+}
+
 function toTimestamp(dateStr, timeStr) {
   if (!dateStr) return null;
   return new Date(`${dateStr}T${timeStr || '00:00'}`).getTime() / 1000;
@@ -95,9 +107,11 @@ export function CostsDashboard() {
     return (c.name || '').toLowerCase().includes(q) || (c.phone || '').includes(q);
   });
 
+  const textCachePct = c => cachePct((c.by_type || {}).text);
+
   const sorted = [...filtered].sort((a, b) => {
-    const va = a[sortField] || 0;
-    const vb = b[sortField] || 0;
+    const va = sortField === 'cache_pct' ? (textCachePct(a) ?? -1) : (a[sortField] || 0);
+    const vb = sortField === 'cache_pct' ? (textCachePct(b) ?? -1) : (b[sortField] || 0);
     if (sortField === 'name') {
       return sortAsc
         ? String(va).localeCompare(String(vb))
@@ -162,12 +176,24 @@ export function CostsDashboard() {
       ` : html`
         <!-- Summary cards -->
         ${summary ? html`
-          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <!-- Total cost -->
             <div class="bg-wa-bg rounded-xl border border-wa-border p-4">
-              <div class="text-[12px] text-wa-secondary uppercase tracking-wide mb-1">Custo Total</div>
+              <div class="text-[12px] text-wa-secondary uppercase tracking-wide mb-1">Custo estimado</div>
               <div class="text-[22px] font-semibold text-wa-text">${formatUsd(summary.cost_usd)}</div>
               <div class="text-[14px] text-wa-secondary">${formatBrl(summary.cost_usd, usdBrlRate)}</div>
+              <div class="text-[11px] text-wa-secondary mt-1">Calculado pelo preço listado de cada modelo; o valor cobrado pelo provedor pode variar.</div>
+            </div>
+            <!-- Prompt cache -->
+            <div class="bg-wa-bg rounded-xl border border-wa-border p-4">
+              <div class="text-[12px] text-wa-secondary uppercase tracking-wide mb-1">Cache da entrada</div>
+              <div class="text-[22px] font-semibold text-wa-text">${formatPct(cachePct((summary.by_type || {}).text))}</div>
+              ${(summary.saved_usd || 0) > 0 ? html`
+                <div class="text-[14px] text-wa-secondary">Economia estimada: ${formatUsd(summary.saved_usd)} (${formatBrl(summary.saved_usd, usdBrlRate)})</div>
+              ` : html`
+                <div class="text-[13px] text-wa-secondary">${cachePct((summary.by_type || {}).text) === null ? 'Sem dados de cache neste período.' : 'Sem economia no período.'}</div>
+              `}
+              <div class="text-[11px] text-wa-secondary mt-1">Parte do texto enviado à IA que foi reaproveitada (mais barata). Só chamadas de texto.</div>
             </div>
             <!-- Total tokens -->
             <div class="bg-wa-bg rounded-xl border border-wa-border p-4">
@@ -237,7 +263,7 @@ export function CostsDashboard() {
                   class="text-right px-4 py-2.5 font-medium text-wa-secondary cursor-pointer hover:text-wa-text"
                   onClick=${() => handleSort('cost_usd')}
                 >
-                  Custo Total ${sortField === 'cost_usd' ? (sortAsc ? ' ↑' : ' ↓') : ''}
+                  Custo estimado ${sortField === 'cost_usd' ? (sortAsc ? ' ↑' : ' ↓') : ''}
                 </th>
                 <th
                   class="text-right px-4 py-2.5 font-medium text-wa-secondary cursor-pointer hover:text-wa-text"
@@ -257,13 +283,19 @@ export function CostsDashboard() {
                 >
                   Chamadas ${sortField === 'call_count' ? (sortAsc ? ' ↑' : ' ↓') : ''}
                 </th>
+                <th
+                  class="text-right px-4 py-2.5 font-medium text-wa-secondary cursor-pointer hover:text-wa-text"
+                  onClick=${() => handleSort('cache_pct')}
+                >
+                  Cache ${sortField === 'cache_pct' ? (sortAsc ? ' ↑' : ' ↓') : ''}
+                </th>
                 <th class="text-right px-4 py-2.5 font-medium text-wa-secondary">Detalhes</th>
               </tr>
             </thead>
             <tbody>
               ${sorted.length === 0 ? html`
                 <tr>
-                  <td colspan="6" class="text-center py-8 text-wa-secondary">
+                  <td colspan="7" class="text-center py-8 text-wa-secondary">
                     ${search ? 'Nenhum contato encontrado.' : 'Nenhum dado de uso encontrado para este periodo.'}
                   </td>
                 </tr>
@@ -303,6 +335,7 @@ function ContactRow({ contact: c, usdBrlRate, typeLabel }) {
       <td class="text-right px-4 py-2.5 font-mono text-blue-600">${formatTokens(c.prompt_tokens)}</td>
       <td class="text-right px-4 py-2.5 font-mono text-orange-600">${formatTokens(c.completion_tokens)}</td>
       <td class="text-right px-4 py-2.5 text-wa-secondary">${c.call_count}</td>
+      <td class="text-right px-4 py-2.5 font-mono text-wa-secondary">${formatPct(cachePct((c.by_type || {}).text))}</td>
       <td class="text-right px-4 py-2.5">
         <button
           onClick=${() => setExpanded(!expanded)}
@@ -312,7 +345,7 @@ function ContactRow({ contact: c, usdBrlRate, typeLabel }) {
     </tr>
     ${expanded ? html`
       <tr class="bg-wa-panel">
-        <td colspan="6" class="px-4 py-3">
+        <td colspan="7" class="px-4 py-3">
           <div class="grid grid-cols-3 gap-2 text-[12px]">
             ${['text', 'audio', 'image'].map(type => {
               const data = (c.by_type || {})[type] || { cost_usd: 0, prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, call_count: 0 };

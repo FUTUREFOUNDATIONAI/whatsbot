@@ -33,7 +33,7 @@ from agno.models.openai import OpenAILike
 from agno.models.message import Message
 from agno.tools.function import Function
 
-from config.settings import LLM_API_BASE_URL
+from config.settings import LLM_API_BASE_URL, get_llm_session_id
 from agent.execution import track_step
 from plugins.events import (
     apply_filter,
@@ -65,7 +65,7 @@ class EngineResult:
     """Outcome of one AGNO run, mapped back to WhatsBot-Lite's ProcessResult."""
     reply: str = ""
     executed_tools: list[dict] = field(default_factory=list)
-    usage: dict | None = None  # {prompt_tokens, completion_tokens, total_tokens}
+    usage: dict | None = None  # {prompt_tokens, completion_tokens, total_tokens, cached_tokens}
 
 
 # --------------------------------------------------------------------------- #
@@ -88,6 +88,12 @@ def build_model(handler, model_id: str | None = None,
         extra["temperature"] = mc["temperature"]
     if mc.get("top_p") is not None:
         extra["top_p"] = mc["top_p"]
+    # Sticky routing: the same session id on every call keeps OpenRouter on one
+    # provider, which is what makes the prompt cache hit.
+    try:
+        extra["extra_headers"] = {"x-session-id": get_llm_session_id()}
+    except Exception as e:  # never block a reply over cache routing
+        logger.warning("llm session id unavailable: %s", e)
     return OpenAILike(
         id=mc.get("model") or model_id or handler.model,
         api_key=handler.api_key,
@@ -280,7 +286,9 @@ def _extract_usage(run_output) -> dict | None:
     tt = getattr(metrics, "total_tokens", 0) or (pt + ct)
     if not (pt or ct or tt):
         return None
-    return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
+    cached = getattr(metrics, "cache_read_tokens", 0) or 0
+    return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt,
+            "cached_tokens": cached}
 
 
 def _extract_reply(run_output) -> str:
@@ -338,6 +346,7 @@ async def run_async(handler, contact, sender, messages, active_tools,
         "model": model_id, "engine": "agno",
         "prompt_tokens": (usage or {}).get("prompt_tokens", 0),
         "completion_tokens": (usage or {}).get("completion_tokens", 0),
+        "cached_tokens": (usage or {}).get("cached_tokens", 0),
         "has_tool_calls": bool(executed),
     })
     return EngineResult(reply=reply, executed_tools=executed, usage=usage)
@@ -366,6 +375,7 @@ def run_sync(handler, contact, sender, messages, active_tools,
         "model": model_id, "engine": "agno",
         "prompt_tokens": (usage or {}).get("prompt_tokens", 0),
         "completion_tokens": (usage or {}).get("completion_tokens", 0),
+        "cached_tokens": (usage or {}).get("cached_tokens", 0),
         "has_tool_calls": bool(executed),
     })
     return EngineResult(reply=reply, executed_tools=executed, usage=usage)
