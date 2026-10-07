@@ -76,7 +76,11 @@ def register_routes(app, deps):
     def pricing_fn(model_id: str) -> tuple[float, float]:
         return _get_model_pricing(model_id, settings.get("openrouter_api_key", ""))
 
+    def pricing_details_fn(model_id: str) -> dict:
+        return _get_model_pricing_details(model_id, settings.get("openrouter_api_key", ""))
+
     agent_handler.pricing_fn = pricing_fn
+    agent_handler.pricing_details_fn = pricing_details_fn
 
     @app.get("/api/usage/summary")
     async def usage_summary_endpoint(period: str | None = None, start: float | None = None, end: float | None = None):

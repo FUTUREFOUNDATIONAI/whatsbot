@@ -1,4 +1,4 @@
-"""SQLAlchemy Core table definitions for WhatsBot.
+"""SQLAlchemy Core table definitions for WhatsBot-Lite.
 
 These ``Table`` objects are the single source of truth for the database
 schema. They are NOT mapped ORM classes — there is no ``DeclarativeBase``, no
@@ -108,6 +108,9 @@ usage = Table(
     Column("total_tokens", Integer, nullable=False, server_default="0"),
     Column("cost_usd", Float, nullable=False, server_default="0.0"),
     Column("ts", Float, nullable=False),
+    # NULL = not measured (rows from before cache tracking); 0 = measured, no cache hit.
+    Column("cached_tokens", Integer, nullable=True),
+    Column("saved_usd", Float, nullable=True),
 )
 Index("idx_usage_contact_ts", usage.c.contact_id, usage.c.ts)
 Index("idx_usage_ts", usage.c.ts)
@@ -220,7 +223,7 @@ chat_projects = Table(
     "chat_projects",
     metadata,
     Column("id", Text, primary_key=True),
-    # ``system`` is the built-in WhatsBot help project; ``plugin`` owns a
+    # ``system`` is the built-in WhatsBot-Lite help project; ``plugin`` owns a
     # durable development workspace.  plugin_id stays stable across updates.
     Column("kind", Text, nullable=False, server_default="plugin"),
     Column("plugin_id", Text),

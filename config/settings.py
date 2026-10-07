@@ -1,4 +1,5 @@
 import os
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -18,7 +19,7 @@ LLM_API_BASE_URL = os.environ.get(
     "LLM_API_BASE_URL", "https://llm.techify.one/api/v1"
 ).rstrip("/")
 
-# Techify account provisioning — used by the first-run setup wizard. The WhatsBot
+# Techify account provisioning — used by the first-run setup wizard. The WhatsBot-Lite
 # fetches the current provisioning TARGET (destination number *and* the phrase to
 # send) from TECHIFY_SERVICE_NUMBER_URL, sends that WhatsApp message to that
 # number, Techify creates an account + API key, and the wizard polls
@@ -78,6 +79,9 @@ _ENV_OVERRIDES_BY_KEY: dict[str, tuple[str, Callable[[str], Any]]] = {
 
 DEFAULT_CONFIG = {
     "openrouter_api_key": "",
+    # Stable per-installation id sent to the LLM proxy so OpenRouter keeps routing
+    # to the same provider (prompt cache hits). Server-only: generated on first use.
+    "llm_session_id": "",
     "model": "deepseek/deepseek-v4.1-flash",
     # Model used by the "sugerir melhoria" analysis (non-agentic). Empty string
     # → falls back to the chat ``model``.
@@ -144,7 +148,7 @@ DEFAULT_CONFIG = {
     # Cached structured verdict for the installed→latest release interval.
     # It contains public release evidence only; no API key or user content.
     "gowa_release_assessment_cache": {},
-    # --- Avisos de atualização do WhatsBot --------------------------------
+    # --- Avisos de atualização do WhatsBot-Lite --------------------------------
     # Ignorar vale somente para uma release; o próximo número volta a avisar.
     # O toggle desliga todos os avisos até ser reativado no painel.
     "whatsbot_update_notifications_enabled": True,
@@ -167,6 +171,24 @@ DEFAULT_CONFIG = {
 
 _MISSING = object()
 
+
+_llm_session_id_cache: str = ""
+
+def get_llm_session_id() -> str:
+    """Return the stable per-installation LLM session id, creating it on first use.
+
+    Random on purpose (``wb-<uuid4 hex>``): it is sent to the provider, so it must
+    never be derived from a phone number, name or API key.
+    """
+    global _llm_session_id_cache
+    if _llm_session_id_cache:
+        return _llm_session_id_cache
+    current = config_repo.get("llm_session_id", "")
+    if not (isinstance(current, str) and current.startswith("wb-")):
+        current = f"wb-{uuid.uuid4().hex}"
+        config_repo.set("llm_session_id", current)
+    _llm_session_id_cache = current
+    return current
 
 class Settings:
     def __init__(self):

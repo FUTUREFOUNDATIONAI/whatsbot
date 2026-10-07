@@ -1,6 +1,6 @@
-# Base oficial de ajuda do WhatsBot
+# Base oficial de ajuda do WhatsBot-Lite
 
-Esta é a fonte principal para orientar quem usa o WhatsBot. Os links usam `{{base_url}}`, que é substituído automaticamente pelo domínio ou pelo endereço local aberto pela pessoa.
+Esta é a fonte principal para orientar quem usa o WhatsBot-Lite. Os links usam `{{base_url}}`, que é substituído automaticamente pelo domínio ou pelo endereço local aberto pela pessoa.
 
 Ao responder:
 
@@ -18,6 +18,31 @@ Esta tela mostra as conversas, mensagens, contatos e o estado da conexão com o 
 
 [Abrir conversas]({{base_url}}/)
 
+### Ler mensagens antigas de uma conversa
+
+Ao abrir uma conversa, o WhatsBot-Lite mostra primeiro as mensagens mais recentes, para que ela abra rápido mesmo quando o histórico tem milhares de mensagens. Nada é apagado: o histórico completo continua guardado.
+
+- Para ver mensagens mais antigas, role a conversa para cima. O botão **Carregar mensagens anteriores** no topo faz o mesmo e mais mensagens aparecem sem você perder o lugar onde estava.
+- A busca da lista de conversas procura em todo o histórico, inclusive nas mensagens que ainda não apareceram na tela. Clique no resultado e a conversa abre direto na mensagem encontrada.
+- Se uma mensagem responde a outra bem antiga, clique na citação e a conversa vai até a mensagem original.
+- Depois de saltar para uma mensagem antiga, aparece o botão **Ir para as mensagens mais recentes**. Ao enviar uma mensagem, a conversa volta sozinha ao final.
+- Áudios e fotos de perfil só são baixados quando chegam perto da tela, então uma conversa longa não baixa tudo de uma vez.
+
+O atalho de busca do navegador (Ctrl+F) só encontra o que já está carregado na tela. Para procurar em todo o histórico, use a busca do WhatsBot-Lite.
+
+[Abrir conversas]({{base_url}}/)
+
+### Abrir a conversa de quem falou em um grupo
+
+Dentro de um grupo, o nome de quem enviou cada mensagem aparece acima do texto. Quando o nome está em azul e fica sublinhado ao passar o mouse, clique nele para falar com essa pessoa em particular:
+
+- Se a pessoa já é um contato, a conversa dela abre na hora.
+- Se ainda não é, o WhatsBot-Lite mostra o aviso sobre os riscos de iniciar uma conversa por aqui. Confirme para criar o contato e abrir a conversa, ou peça para receber o link no seu próprio WhatsApp e começar pelo aplicativo oficial.
+
+O nome só vira clicável para números do Brasil e depois que a lista de participantes do grupo terminar de carregar. Clicar não cria nenhum contato por si só.
+
+[Abrir conversas]({{base_url}}/)
+
 ### Abas de configuração do painel
 
 O painel separa as configurações em três abas:
@@ -26,11 +51,11 @@ O painel separa as configurações em três abas:
 - **Modelos e mídia** reúne chave de API, modelos e leitura de áudios, imagens e documentos. [Abrir aba Modelos e mídia]({{base_url}}/painel?aba=modelos-midia)
 - **Sistema** reúne acesso, atualizações, banco de dados e o motor do WhatsApp. [Abrir aba Sistema]({{base_url}}/painel?aba=sistema)
 
-Cada opção abaixo tem um link direto. Ao abrir esse link, o WhatsBot seleciona a aba certa e leva a pessoa até a configuração.
+Cada opção abaixo tem um link direto. Ao abrir esse link, o WhatsBot-Lite seleciona a aba certa e leva a pessoa até a configuração.
 
 ### Ativar ou interromper respostas automáticas
 
-Em **Painel → Agente → Automação**, use **Respostas automáticas**. Quando estiver desativado, o WhatsBot continua recebendo as conversas, mas não responde automaticamente.
+Em **Painel → Agente → Automação**, use **Respostas automáticas**. Quando estiver desativado, o WhatsBot-Lite continua recebendo as conversas, mas não responde automaticamente.
 
 [Abrir respostas automáticas]({{base_url}}/painel?aba=agente#auto-reply)
 
@@ -68,7 +93,7 @@ Em **Painel → Modelos e mídia → API e Modelos**, escolha o modelo principal
 
 ### Alterar o modelo de melhoria
 
-Em **Painel → Modelos e mídia → API e Modelos**, escolha o modelo usado para analisar respostas marcadas como incorretas. Se ficar vazio, o WhatsBot usa o modelo principal.
+Em **Painel → Modelos e mídia → API e Modelos**, escolha o modelo usado para analisar respostas marcadas como incorretas. Se ficar vazio, o WhatsBot-Lite usa o modelo principal.
 
 [Abrir modelo de melhoria]({{base_url}}/painel?aba=modelos-midia#improvement-model)
 
@@ -94,7 +119,7 @@ Em **Painel → Agente → Comportamento**, ative ou desative **Dividir resposta
 
 ### Parar ou configurar a leitura de documentos
 
-Em **Painel → Modelos e mídia → API e Modelos**, desative **Ler documento** para o WhatsBot deixar de extrair o conteúdo de PDFs e outros documentos recebidos.
+Em **Painel → Modelos e mídia → API e Modelos**, desative **Ler documento** para o WhatsBot-Lite deixar de extrair o conteúdo de PDFs e outros documentos recebidos.
 
 [Abrir leitura de documentos]({{base_url}}/painel?aba=modelos-midia#document-transcription)
 
@@ -142,6 +167,8 @@ Em **Painel → Agente → Comportamento**, use **Marcar conversas** para marcar
 
 A página **Custos** mostra o consumo e os valores estimados das chamadas de IA. No Chat, o resumo de tokens, cache, custo da resposta e total da conversa aparece quando a execução termina.
 
+O valor aparece como **Custo estimado** porque é calculado pelo preço listado de cada modelo; o valor realmente cobrado pelo provedor pode ser um pouco diferente. O cartão **Cache da entrada** mostra quanto do texto enviado à IA foi reaproveitado de chamadas anteriores, o que sai mais barato, e a **Economia estimada** que isso gerou. A tabela por contato tem a coluna **Cache**. Períodos anteriores a esse recurso não têm dado de cache e aparecem com "—"; eles não entram na porcentagem.
+
 [Abrir custos de IA]({{base_url}}/costs)
 
 ### Ver o que aconteceu durante uma resposta
@@ -166,7 +193,7 @@ Em **Painel → Sistema → Avançado**, altere **Execuções salvas**.
 
 ### Usar a ajuda do sistema
 
-Abra o **Chat** e use o projeto **WhatsBot — Ajuda do sistema** para perguntar como usar ou configurar o WhatsBot. Cada conversa possui seu próprio link.
+Abra o **Chat** e use o projeto **WhatsBot-Lite — Ajuda do sistema** para perguntar como usar ou configurar o WhatsBot-Lite. Cada conversa possui seu próprio link.
 
 [Abrir Chat]({{base_url}}/chat)
 
@@ -178,7 +205,7 @@ No celular, toque no botão de menu no alto do Chat para abrir os projetos e as 
 
 ### Criar ou alterar um plugin
 
-A ajuda do sistema não cria plugins. No **Chat**, clique no botão **+** no topo da barra lateral esquerda, crie um projeto e descreva com suas palavras o que o plugin deve fazer. Se houver poucos detalhes, o criador fará perguntas curtas antes de começar.
+A ajuda do sistema não cria plugins. No **Chat**, clique no botão **+** no topo da barra lateral esquerda, crie um projeto e descreva com suas palavras o que o plugin deve fazer. Se houver poucos detalhes, o criador fará perguntas curtas antes de começar. O formato completo dos plugins já é carregado pelo criador; depois de entender o pedido, ele trabalha diretamente nos arquivos e executa a validação, sem pesquisar o código do WhatsBot-Lite. É possível abrir outra página ou fechar o navegador durante a criação: o trabalho continua no servidor e o andamento reaparece ao voltar. Quando terminar, a conversa mostra **Sim, instalar**. Essa oferta continua disponível ao reabrir a conversa. Também é possível escrever “instale por favor” para autorizar a instalação direta pelo WhatsBot-Lite.
 
 [Abrir criador de plugins]({{base_url}}/chat)
 
@@ -198,7 +225,7 @@ No Chat, projetos podem ser renomeados, removidos da lista e arrastados para mud
 
 ### Criar, trocar ou remover a senha do painel
 
-Em **Painel → Sistema → Avançado**, use **Senha do painel**. Sem uma senha configurada, qualquer pessoa que alcançar o endereço do WhatsBot poderá abrir o painel.
+Em **Painel → Sistema → Avançado**, use **Senha do painel**. Sem uma senha configurada, qualquer pessoa que alcançar o endereço do WhatsBot-Lite poderá abrir o painel.
 
 [Abrir senha do painel]({{base_url}}/painel?aba=sistema#password)
 
@@ -208,15 +235,15 @@ Em **Painel → Sistema → Banco de dados**, consulte o banco em uso ou informe
 
 [Abrir banco de dados]({{base_url}}/painel?aba=sistema#database)
 
-### Atualizar o WhatsBot
+### Atualizar o WhatsBot-Lite
 
-Quando uma nova versão estiver disponível, o WhatsBot mostra um aviso ao abrir ou atualizar a página. Nele é possível atualizar agora, ignorar somente aquela versão ou nunca receber avisos. Se uma versão for ignorada, a próxima volta a ser avisada. Para reativar ou desligar os avisos, abra **Painel → Sistema → Avançado → Atualizar WhatsBot**. Quando uma atualização é aplicada, o WhatsBot reinicia automaticamente para carregar a nova versão.
+Quando uma nova versão estiver disponível, o WhatsBot-Lite mostra um aviso ao abrir ou atualizar a página. Nele é possível atualizar agora, ignorar somente aquela versão ou nunca receber avisos. Se uma versão for ignorada, a próxima volta a ser avisada. Para reativar ou desligar os avisos, abra **Painel → Sistema → Avançado → Atualizar WhatsBot-Lite**. Quando uma atualização é aplicada, o WhatsBot-Lite reinicia automaticamente para carregar a nova versão.
 
 [Abrir atualizações]({{base_url}}/painel?aba=sistema#update)
 
 ### Ativar ou desativar os avisos de novas versões
 
-Em **Painel → Sistema → Avançado → Atualizar WhatsBot**, altere **Avisar quando houver uma nova versão** e salve. A verificação manual continua disponível mesmo com os avisos desligados.
+Em **Painel → Sistema → Avançado → Atualizar WhatsBot-Lite**, altere **Avisar quando houver uma nova versão** e salve. A verificação manual continua disponível mesmo com os avisos desligados.
 
 [Abrir avisos de atualização]({{base_url}}/painel?aba=sistema#update-notifications)
 
@@ -238,11 +265,17 @@ Em **Painel → Sistema → GOWA**, altere **Verificar atualizações do GOWA di
 
 [Abrir verificação automática do GOWA]({{base_url}}/painel?aba=sistema#gowa-auto-update)
 
+## Telas dos plugins
+
+As telas criadas por plugins aparecem no menu da engrenagem e usam a largura disponível do painel. Elas se
+adaptam ao celular e ao tema claro ou escuro. A forma de organizar os dados muda conforme a finalidade de
+cada plugin; listas, agendas, formulários e relatórios podem ter estruturas diferentes.
+
 ## Quando esta base não tiver a resposta
 
 Pesquise nesta ordem:
 
-1. A interface e as rotas atuais do WhatsBot.
+1. A interface e as rotas atuais do WhatsBot-Lite.
 2. A documentação e o código diretamente relacionados à dúvida.
 3. O manifesto e o código dos plugins instalados, quando a dúvida envolver um plugin.
 4. A estrutura e as migrations do banco, quando forem necessárias para confirmar o comportamento.

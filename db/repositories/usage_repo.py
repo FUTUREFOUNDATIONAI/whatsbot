@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from sqlalchemy import and_, func, insert as sa_insert, select
+from sqlalchemy import and_, case, func, insert as sa_insert, select
 
 from db.engine import get_engine, read_connect
 from db.tables import contacts, usage
@@ -12,8 +12,9 @@ from db.tables import contacts, usage
 
 def add(contact_id: int, call_type: str, model: str,
         prompt_tokens: int, completion_tokens: int,
-        total_tokens: int, cost_usd: float) -> None:
-    """Insert a usage record."""
+        total_tokens: int, cost_usd: float, *,
+        cached_tokens: int | None = None, saved_usd: float | None = None) -> None:
+    """Insert a usage record. ``cached_tokens=None`` means "not measured"."""
     with get_engine().begin() as conn:
         conn.execute(sa_insert(usage).values(
             contact_id=contact_id,
@@ -23,6 +24,8 @@ def add(contact_id: int, call_type: str, model: str,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
             cost_usd=cost_usd,
+            cached_tokens=cached_tokens,
+            saved_usd=saved_usd,
             ts=time.time(),
         ))
 
@@ -44,7 +47,27 @@ def _aggregate_columns():
         func.coalesce(func.sum(usage.c.total_tokens), 0).label("total_tokens"),
         func.coalesce(func.sum(usage.c.cost_usd), 0.0).label("cost_usd"),
         func.count().label("call_count"),
+        # Cache stats only count rows where the cache was measured (not NULL), so
+        # old history does not dilute the percentage.
+        func.coalesce(func.sum(usage.c.cached_tokens), 0).label("cached_tokens"),
+        func.coalesce(func.sum(usage.c.saved_usd), 0.0).label("saved_usd"),
+        func.coalesce(func.sum(case(
+            (usage.c.cached_tokens.is_not(None), usage.c.prompt_tokens), else_=0)), 0
+        ).label("cache_measured_prompt_tokens"),
     ]
+
+def _stats(row) -> dict:
+    """Token/cost/cache fields shared by every aggregate dict."""
+    return {
+        "cost_usd": row["cost_usd"],
+        "prompt_tokens": row["prompt_tokens"],
+        "completion_tokens": row["completion_tokens"],
+        "total_tokens": row["total_tokens"],
+        "call_count": row["call_count"],
+        "cached_tokens": row["cached_tokens"],
+        "saved_usd": row["saved_usd"],
+        "cache_measured_prompt_tokens": row["cache_measured_prompt_tokens"],
+    }
 
 
 def summary(contact_id: int, start_ts: float | None = None,
@@ -61,22 +84,9 @@ def summary(contact_id: int, start_ts: float | None = None,
             .group_by(usage.c.call_type)
         ).mappings().all()
 
-    totals = {
-        "prompt_tokens": totals_row["prompt_tokens"],
-        "completion_tokens": totals_row["completion_tokens"],
-        "total_tokens": totals_row["total_tokens"],
-        "cost_usd": totals_row["cost_usd"],
-        "call_count": totals_row["call_count"],
-        "by_type": {},
-    }
+    totals = {**_stats(totals_row), "by_type": {}}
     for r in by_type_rows:
-        totals["by_type"][r["call_type"]] = {
-            "cost_usd": r["cost_usd"],
-            "prompt_tokens": r["prompt_tokens"],
-            "completion_tokens": r["completion_tokens"],
-            "total_tokens": r["total_tokens"],
-            "call_count": r["call_count"],
-        }
+        totals["by_type"][r["call_type"]] = _stats(r)
     return totals
 
 
@@ -95,22 +105,9 @@ def global_summary(start_ts: float | None = None,
         totals_row = conn.execute(totals_stmt).mappings().first()
         by_type_rows = conn.execute(by_type_stmt).mappings().all()
 
-    totals = {
-        "prompt_tokens": totals_row["prompt_tokens"],
-        "completion_tokens": totals_row["completion_tokens"],
-        "total_tokens": totals_row["total_tokens"],
-        "cost_usd": totals_row["cost_usd"],
-        "call_count": totals_row["call_count"],
-        "by_type": {},
-    }
+    totals = {**_stats(totals_row), "by_type": {}}
     for r in by_type_rows:
-        totals["by_type"][r["call_type"]] = {
-            "cost_usd": r["cost_usd"],
-            "prompt_tokens": r["prompt_tokens"],
-            "completion_tokens": r["completion_tokens"],
-            "total_tokens": r["total_tokens"],
-            "call_count": r["call_count"],
-        }
+        totals["by_type"][r["call_type"]] = _stats(r)
     return totals
 
 
@@ -147,21 +144,11 @@ def by_contact(start_ts: float | None = None,
             ).mappings().all()
             by_type = {}
             for r in by_type_rows:
-                by_type[r["call_type"]] = {
-                    "cost_usd": r["cost_usd"],
-                    "prompt_tokens": r["prompt_tokens"],
-                    "completion_tokens": r["completion_tokens"],
-                    "total_tokens": r["total_tokens"],
-                    "call_count": r["call_count"],
-                }
+                by_type[r["call_type"]] = _stats(r)
             results.append({
                 "phone": row["phone"],
                 "name": row["name"] or "",
-                "prompt_tokens": row["prompt_tokens"],
-                "completion_tokens": row["completion_tokens"],
-                "total_tokens": row["total_tokens"],
-                "cost_usd": row["cost_usd"],
-                "call_count": row["call_count"],
+                **_stats(row),
                 "by_type": by_type,
             })
     return results
@@ -176,7 +163,7 @@ def detail(contact_id: int, start_ts: float | None = None,
             select(
                 usage.c.call_type, usage.c.model, usage.c.prompt_tokens,
                 usage.c.completion_tokens, usage.c.total_tokens,
-                usage.c.cost_usd, usage.c.ts,
+                usage.c.cost_usd, usage.c.cached_tokens, usage.c.saved_usd, usage.c.ts,
             )
             .where(and_(*where_clauses))
             .order_by(usage.c.ts)

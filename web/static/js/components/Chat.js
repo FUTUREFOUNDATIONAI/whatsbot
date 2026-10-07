@@ -69,6 +69,13 @@ function formatRecordTime(seconds) {
   return `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
+function pendingInstallOffer(messages) {
+  const offer = [...(messages || [])].reverse().find(message => (
+    message.kind === 'install_offer' && (message.metadata || {}).status === 'pending'
+  ));
+  return offer ? { ...(offer.metadata || {}), offer_message_id: offer.id } : null;
+}
+
 function chatRouteFromPath() {
   const match = window.location.pathname.match(
     /^\/chat\/projects\/([^/]+)(?:\/conversations\/([^/]+)(?:\/messages\/(\d+))?)?$/,
@@ -99,8 +106,8 @@ function statusLabel(name) {
     read_file: 'Lendo arquivo', list_files: 'Listando arquivos', search_content: 'Pesquisando no projeto',
     write_file: 'Criando arquivo', edit_file: 'Editando arquivo', move_file: 'Movendo arquivo',
     delete_file: 'Excluindo arquivo', run_command: 'Executando comando',
-    read_whatsbot_file: 'Consultando o WhatsBot', list_whatsbot_files: 'Listando referências',
-    search_whatsbot: 'Pesquisando no WhatsBot',
+    read_whatsbot_file: 'Consultando o WhatsBot-Lite', list_whatsbot_files: 'Listando referências',
+    search_whatsbot: 'Pesquisando no WhatsBot-Lite',
   };
   return labels[name] || name || 'Executando ação';
 }
@@ -144,6 +151,7 @@ function MessageList({ messages, streaming, running, projectId, conversationId, 
   }
   for (const message of messages) {
     if (message.kind === 'action') { actions.push(message); continue; }
+    if (message.kind === 'install_offer') continue;
     flush();
     if (message.kind === 'system') {
       nodes.push(html`<div id=${`chat-message-${message.id}`} class="mx-auto max-w-3xl my-2 text-center text-sm text-red-500">${message.content}</div>`);
@@ -187,6 +195,7 @@ export function Chat() {
   const [status, setStatus] = useState('');
   const [runId, setRunId] = useState('');
   const [installReady, setInstallReady] = useState(null);
+  const [installing, setInstalling] = useState(false);
   const [files, setFiles] = useState([]);
   const [selectedFile, setSelectedFile] = useState(null);
   const [showFiles, setShowFiles] = useState(false);
@@ -207,6 +216,9 @@ export function Chat() {
   const audioRecorderRef = useRef(null);
   const recordTimerRef = useRef(null);
   const cancelRecordingRef = useRef(false);
+  const liveStreamRunRef = useRef('');
+  const streamControllerRef = useRef(null);
+  const streamConversationRef = useRef('');
 
   const project = data.projects.find(p => p.id === projectId) || null;
   const selectedModel = models.find(m => m.id === (conversation && conversation.model));
@@ -231,6 +243,13 @@ export function Chat() {
     target.style.height = 'auto';
     target.style.height = `${Math.min(target.scrollHeight, 240)}px`;
     target.style.overflowY = target.scrollHeight > 240 ? 'auto' : 'hidden';
+  }
+
+  function detachLiveStream() {
+    if (streamControllerRef.current) streamControllerRef.current.abort();
+    streamControllerRef.current = null;
+    streamConversationRef.current = '';
+    liveStreamRunRef.current = '';
   }
 
   function updateInput(value, target) {
@@ -325,6 +344,7 @@ export function Chat() {
   }, []);
 
   useEffect(() => () => {
+    detachLiveStream();
     cancelRecordingRef.current = true;
     clearInterval(recordTimerRef.current);
     if (audioRecorderRef.current) audioRecorderRef.current.stop();
@@ -350,11 +370,48 @@ export function Chat() {
     }
   }, [messages, streaming, status, linkedMessageId]);
 
+  useEffect(() => {
+    if (!conversationId || !running || liveStreamRunRef.current === runId) return;
+    let stopped = false;
+    let refreshing = false;
+    async function refreshBackgroundRun() {
+      if (stopped || refreshing) return;
+      refreshing = true;
+      try {
+        const result = await api('GET', `/api/chat/conversations/${conversationId}/activity`);
+        if (stopped) return;
+        const conversationMessages = result.messages || [];
+        setMessages(conversationMessages);
+        setInstallReady(pendingInstallOffer(conversationMessages));
+        if (result.active_run) {
+          setRunId(result.active_run.run_id);
+          setStatus(result.active_run.status || 'Trabalhando em segundo plano');
+        } else {
+          setRunning(false); setRunId(''); setStatus('');
+        }
+      } catch (_) {
+        // Leaving the page or a short restart does not cancel the server task.
+        // The next poll recovers the messages already persisted by the run.
+      } finally {
+        refreshing = false;
+      }
+    }
+    refreshBackgroundRun();
+    const timer = setInterval(refreshBackgroundRun, 2000);
+    return () => { stopped = true; clearInterval(timer); };
+  }, [conversationId, running, runId]);
+
   async function openConversation(id, options = {}) {
     try {
+      if (streamConversationRef.current && streamConversationRef.current !== id) detachLiveStream();
       const result = await api('GET', `/api/chat/conversations/${id}`);
-      setConversationId(id); setConversation(result.conversation); setMessages(result.messages || []);
-      setProjectId(result.project.id); setLinkedMessageId(options.messageId || null); setInstallReady(null);
+      const conversationMessages = result.messages || [];
+      const activeRun = result.active_run || null;
+      setConversationId(id); setConversation(result.conversation); setMessages(conversationMessages);
+      setProjectId(result.project.id); setLinkedMessageId(options.messageId || null);
+      setInstallReady(pendingInstallOffer(conversationMessages));
+      setRunning(!!activeRun); setRunId(activeRun ? activeRun.run_id : '');
+      setStatus(activeRun ? (activeRun.status || 'Trabalhando em segundo plano') : '');
       setMobileSidebarOpen(false); setShowFiles(false);
       setExpandedProjectIds(previous => [...new Set([...previous, result.project.id])]);
       if (result.project.kind === 'plugin') loadFiles(result.project.id);
@@ -412,6 +469,7 @@ export function Chat() {
   }
 
   function selectProject(project) {
+    detachLiveStream();
     setProjectId(project.id);
     setConversationId(''); setConversation(null); setMessages([]); setLinkedMessageId(null); setInstallReady(null);
     setShowFiles(false);
@@ -624,9 +682,13 @@ export function Chat() {
       inputRef.current.style.overflowY = 'hidden';
     }
     setMessages(prev => [...prev, optimistic]); setStreaming(''); setRunning(true); setStatus('Iniciando'); setInstallReady(null);
+    const streamController = new AbortController();
+    streamControllerRef.current = streamController;
+    streamConversationRef.current = conversationId;
     try {
       const response = await fetch(`/api/chat/conversations/${conversationId}/messages`, {
         method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ content }),
+        signal: streamController.signal,
       });
       if (!response.ok) { const failure = await response.json(); throw new Error(failure.error || 'Falha ao iniciar'); }
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
@@ -639,7 +701,10 @@ export function Chat() {
           if (!line.trim()) continue;
           const evt = JSON.parse(line);
           const payload = evt.data || {};
-          if (evt.event === 'run_started') setRunId(payload.run_id);
+          if (evt.event === 'run_started') {
+            liveStreamRunRef.current = payload.run_id;
+            setRunId(payload.run_id);
+          }
           else if (evt.event === 'content') setStreaming(prev => prev + (payload.delta || ''));
           else if (evt.event === 'status') setStatus(payload.label || 'Trabalhando');
           else if (evt.event === 'action_started') setMessages(prev => [...prev, payload]);
@@ -651,6 +716,7 @@ export function Chat() {
           else if (evt.event === 'metrics') setMessages(prev => [...prev, payload]);
           else if (evt.event === 'message' || evt.event === 'message_saved') { setStreaming(''); setMessages(prev => [...prev, payload]); }
           else if (evt.event === 'install_ready') setInstallReady(payload);
+          else if (evt.event === 'install_completed') setNotice(`${payload.message} O WhatsBot-Lite será reiniciado.`);
           else if (evt.event === 'validation_failed') setNotice(`O plugin ainda não passou na validação: ${payload.error}`);
           else if (evt.event === 'compacted') setNotice('O contexto foi compactado automaticamente.');
           else if (evt.event === 'conversation_updated') setConversation(prev => ({ ...prev, title: payload.title }));
@@ -658,8 +724,17 @@ export function Chat() {
         }
       }
       await openConversation(conversationId); await reload(projectId); if (project && project.kind === 'plugin') await loadFiles();
-    } catch (error) { setNotice(error.message); }
-    finally { setRunning(false); setStreaming(''); setStatus(''); setRunId(''); }
+    } catch (error) {
+      if (!error || error.name !== 'AbortError') setNotice(error.message);
+    }
+    finally {
+      if (streamControllerRef.current === streamController) {
+        streamControllerRef.current = null;
+        streamConversationRef.current = '';
+        liveStreamRunRef.current = '';
+        setRunning(false); setStreaming(''); setStatus(''); setRunId('');
+      }
+    }
   }
 
   async function cancel() {
@@ -669,18 +744,31 @@ export function Chat() {
   }
 
   async function install() {
+    if (installing) return;
+    setInstalling(true);
     try {
       const result = await api('POST', `/api/chat/projects/${projectId}/install`, { conversation_id: conversationId });
-      setNotice(result.message + (result.restarting ? ' O WhatsBot será reiniciado.' : ''));
-      setMessages(prev => [...prev, { id: `install-${Date.now()}`, role: 'assistant', kind: 'message', content: result.message + ' O WhatsBot será reiniciado para carregar a nova versão.' }]);
+      setNotice(result.message + (result.restarting ? ' O WhatsBot-Lite será reiniciado.' : ''));
       setInstallReady(null);
+      setMessages(previous => [
+        ...previous.map(message => message.kind === 'install_offer'
+          ? { ...message, metadata: { ...(message.metadata || {}), status: result.updated ? 'updated' : 'installed' } }
+          : message),
+        {
+          id: `install-${Date.now()}`,
+          role: 'assistant',
+          kind: 'message',
+          content: `${result.message} O WhatsBot-Lite será reiniciado para carregar o plugin.`,
+        },
+      ]);
     } catch (error) { setNotice(error.message); }
+    finally { setInstalling(false); }
   }
 
   async function rollback() {
     try {
       const result = await api('POST', `/api/chat/projects/${projectId}/rollback`, {});
-      setNotice(`Backup restaurado (v${result.version}). O WhatsBot será reiniciado.`);
+      setNotice(`Backup restaurado (v${result.version}). O WhatsBot-Lite será reiniciado.`);
     } catch (error) { setNotice(error.message); }
   }
 
@@ -708,8 +796,8 @@ export function Chat() {
       <aside id="chat-project-sidebar" class="chat-sidebar w-72 shrink-0 flex flex-col ${mobileSidebarOpen ? 'is-mobile-open' : ''}">
         <div class="chat-sidebar-head p-4">
           <div class="flex items-center gap-3">
-            <a href="/" class="chat-icon-button" title="Voltar ao WhatsBot" aria-label="Voltar ao WhatsBot">←</a>
-            <div class="min-w-0 flex-1"><div class="font-semibold text-[15px]">Chat</div><div class="text-[11px] opacity-70">WhatsBot + Criador de Plugins</div></div>
+            <a href="/" class="chat-icon-button" title="Voltar ao WhatsBot-Lite" aria-label="Voltar ao WhatsBot-Lite">←</a>
+            <div class="min-w-0 flex-1"><div class="font-semibold text-[15px]">Chat</div><div class="text-[11px] opacity-70">WhatsBot-Lite + Criador de Plugins</div></div>
             <button onClick=${() => setShowNew(!showNew)} class="chat-icon-button" title="Novo plugin" aria-label="Novo plugin">＋</button>
             <button type="button" onClick=${() => setMobileSidebarOpen(false)} class="chat-icon-button chat-mobile-close" title="Fechar projetos" aria-label="Fechar projetos">×</button>
           </div>
@@ -764,7 +852,7 @@ export function Chat() {
           >
             <svg viewBox="0 0 24 24" width="21" height="21" fill="currentColor" aria-hidden="true"><path d="M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h16v2H4v-2z"/></svg>
           </button>
-          <div class="chat-topbar-title min-w-0 mr-auto"><div class="font-semibold truncate">${conversation ? conversation.title : project ? project.name : 'Chat'}</div><div class="text-[11px] text-wa-secondary truncate">${project && project.kind === 'plugin' ? `Projeto ${project.plugin_id}` : 'Ajuda e configuração do WhatsBot'}</div></div>
+          <div class="chat-topbar-title min-w-0 mr-auto"><div class="font-semibold truncate">${conversation ? conversation.title : project ? project.name : 'Chat'}</div><div class="text-[11px] text-wa-secondary truncate">${project && project.kind === 'plugin' ? `Projeto ${project.plugin_id}` : 'Ajuda e configuração do WhatsBot-Lite'}</div></div>
           ${project && project.kind === 'plugin' ? html`<button onClick=${() => { setShowFiles(!showFiles); loadFiles(); }} class="chat-secondary-button">▱ Arquivos</button>` : null}
           ${installedProjectPlugin && installedProjectPlugin.load_error ? html`<button onClick=${rollback} class="chat-danger-button" title=${installedProjectPlugin.load_error}>Restaurar</button>` : null}
         </header>
@@ -772,12 +860,12 @@ export function Chat() {
         <div class="flex-1 min-h-0 flex">
           <div class="chat-transcript flex-1 min-w-0 overflow-auto wa-scrollbar p-4 md:p-6">
             <div class="max-w-3xl mx-auto">
-              ${!conversation ? html`<div class="h-full min-h-64 flex flex-col items-center justify-center text-center text-wa-secondary"><div class="text-4xl mb-3">✦</div><div class="text-lg text-wa-text">${project ? 'Crie ou abra uma conversa' : 'Escolha um projeto'}</div><div class="text-sm mt-2 max-w-md">Pergunte como configurar o WhatsBot ou descreva o plugin que deseja criar.</div></div>` : html`<${MessageList} messages=${messages} streaming=${streaming} running=${running} projectId=${projectId} conversationId=${conversationId} linkedMessageId=${linkedMessageId} onMessageLink=${openMessageLink} />`}
+              ${!conversation ? html`<div class="h-full min-h-64 flex flex-col items-center justify-center text-center text-wa-secondary"><div class="text-4xl mb-3">✦</div><div class="text-lg text-wa-text">${project ? 'Crie ou abra uma conversa' : 'Escolha um projeto'}</div><div class="text-sm mt-2 max-w-md">Pergunte como configurar o WhatsBot-Lite ou descreva o plugin que deseja criar.</div></div>` : html`<${MessageList} messages=${messages} streaming=${streaming} running=${running} projectId=${projectId} conversationId=${conversationId} linkedMessageId=${linkedMessageId} onMessageLink=${openMessageLink} />`}
               ${running && status ? html`<div class="text-xs text-wa-secondary animate-pulse my-2">${status}</div>` : null}
               ${installReady ? html`<div class="my-4 p-4 rounded-xl border border-wa-teal/40 bg-wa-bg shadow-sm">
                 <div class="font-medium">${installReady.installed ? 'Plugin validado. Quer atualizar o plugin instalado?' : 'Plugin pronto. Quer instalar?'}</div>
                 <div class="text-xs text-wa-secondary mt-1">${installReady.plugin_id} v${installReady.version} · ${installReady.tests} teste(s)</div>
-                <div class="flex flex-wrap gap-2 mt-3"><button onClick=${install} class="px-4 py-2 rounded bg-wa-teal text-white text-sm">Sim</button><button onClick=${() => setInstallReady(null)} class="px-4 py-2 rounded border border-wa-border text-sm">Agora não</button><a href=${`/api/chat/projects/${projectId}/export`} class="px-4 py-2 rounded border border-wa-border text-sm no-underline text-wa-text">Baixar ZIP</a></div>
+                <div class="flex flex-wrap gap-2 mt-3"><button onClick=${install} disabled=${installing} class="px-4 py-2 rounded bg-wa-teal text-white text-sm disabled:opacity-60">${installing ? 'Instalando…' : 'Sim, instalar'}</button><button onClick=${() => setInstallReady(null)} disabled=${installing} class="px-4 py-2 rounded border border-wa-border text-sm">Agora não</button><a href=${`/api/chat/projects/${projectId}/export`} class="px-4 py-2 rounded border border-wa-border text-sm no-underline text-wa-text">Baixar ZIP</a></div>
               </div>` : null}
               <div ref=${endRef}></div>
             </div>
@@ -815,7 +903,7 @@ export function Chat() {
               } else if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault(); send();
               }
-            }} placeholder=${project && project.kind === 'system' ? 'Pergunte sobre o WhatsBot…' : 'Descreva o plugin ou a alteração…'} class="chat-composer-input wa-scrollbar"></textarea>
+            }} placeholder=${project && project.kind === 'system' ? 'Pergunte sobre o WhatsBot-Lite…' : 'Descreva o plugin ou a alteração…'} class="chat-composer-input wa-scrollbar"></textarea>
             <div class="chat-composer-bar">
               <div class="chat-composer-options flex min-w-0 items-center gap-1.5">
                 <select ref=${modelRef} class="chat-model-select" value=${conversation.model} disabled=${running || transcribing} onChange=${e => updateConversation({ model: e.target.value, reasoning: '' })} title="Modelo desta conversa">

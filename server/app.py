@@ -1,4 +1,4 @@
-"""WhatsBot — FastAPI backend with REST API, WebSocket and background tasks."""
+"""WhatsBot-Lite — FastAPI backend with REST API, WebSocket and background tasks."""
 
 import asyncio
 import dataclasses
@@ -166,7 +166,7 @@ def create_app(
         import time as _time
         state.stop_event.clear()
         _loop = asyncio.get_running_loop()
-        _set_plugin_runtime(ws_manager, _loop)
+        _set_plugin_runtime(ws_manager, _loop, gowa_client, agent_handler)
         _set_events_runtime(_loop, agent_handler)
         _set_balance_runtime(ws_manager, _loop, settings)
         # Lifecycle: plugins finished loading + bus is live, now broadcast
@@ -209,7 +209,7 @@ def create_app(
 
     _docs_enabled = os.getenv("WHATSBOT_ENABLE_DOCS", "0") == "1"
     app = FastAPI(
-        title="WhatsBot",
+        title="WhatsBot-Lite",
         lifespan=lifespan,
         docs_url="/docs" if _docs_enabled else None,
         redoc_url="/redoc" if _docs_enabled else None,

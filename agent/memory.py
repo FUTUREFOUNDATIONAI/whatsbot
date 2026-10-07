@@ -274,9 +274,11 @@ class ContactMemory:
 
     def add_usage(self, call_type: str, model: str,
                   prompt_tokens: int, completion_tokens: int,
-                  total_tokens: int, cost_usd: float) -> None:
+                  total_tokens: int, cost_usd: float, *,
+                  cached_tokens: int | None = None, saved_usd: float | None = None) -> None:
         usage_repo.add(self.id, call_type, model, prompt_tokens,
-                       completion_tokens, total_tokens, cost_usd)
+                       completion_tokens, total_tokens, cost_usd,
+                       cached_tokens=cached_tokens, saved_usd=saved_usd)
 
     def get_usage_summary(self, start_ts: float | None = None,
                           end_ts: float | None = None) -> dict:

@@ -69,6 +69,8 @@ function Avatar({ size, avatarUrl, fallback }) {
         <img
           ref=${imgRef}
           src=${avatarUrl}
+          loading="lazy"
+          decoding="async"
           class="absolute inset-0 w-full h-full object-cover transition-opacity duration-150 ${loaded ? 'opacity-100' : 'opacity-0'}"
           onLoad=${() => setLoaded(true)}
           onError=${() => setLoaded(false)}
