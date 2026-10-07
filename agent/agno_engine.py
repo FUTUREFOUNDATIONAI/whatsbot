@@ -1,7 +1,7 @@
-"""AGNO-based agent engine for WhatsBot.
+"""AGNO-based agent engine for WhatsBot-Lite.
 
 Replaces the hand-rolled OpenAI tool-calling loop with the AGNO framework
-(``agno.agent.Agent``) while preserving every WhatsBot
+(``agno.agent.Agent``) while preserving every WhatsBot-Lite
 plugin hook (filters + events), usage accounting and execution tracking.
 
 Design notes
@@ -9,7 +9,7 @@ Design notes
 * **Stateless per request.** A fresh Agent is built for each message so
   the tool closures can capture a per-request ``executed`` collector without
   cross-talk between concurrent contacts. AGNO objects are cheap to build.
-* **WhatsBot owns history/system prompt.** We do *not* hand AGNO a ``db`` nor
+* **WhatsBot-Lite owns history/system prompt.** We do *not* hand AGNO a ``db`` nor
   let it build its own context. The system message and the conversation are
   passed in explicitly (already run through ``filter.system_prompt`` and
   ``filter.llm.messages`` by the handler), and AGNO's context builders are
@@ -33,7 +33,7 @@ from agno.models.openai import OpenAILike
 from agno.models.message import Message
 from agno.tools.function import Function
 
-from config.settings import LLM_API_BASE_URL
+from config.settings import LLM_API_BASE_URL, get_llm_session_id
 from agent.execution import track_step
 from plugins.events import (
     apply_filter,
@@ -62,10 +62,10 @@ _DEFAULT_MAX_TOKENS = 8192
 
 @dataclass
 class EngineResult:
-    """Outcome of one AGNO run, mapped back to WhatsBot's ProcessResult."""
+    """Outcome of one AGNO run, mapped back to WhatsBot-Lite's ProcessResult."""
     reply: str = ""
     executed_tools: list[dict] = field(default_factory=list)
-    usage: dict | None = None  # {prompt_tokens, completion_tokens, total_tokens}
+    usage: dict | None = None  # {prompt_tokens, completion_tokens, total_tokens, cached_tokens}
 
 
 # --------------------------------------------------------------------------- #
@@ -88,6 +88,12 @@ def build_model(handler, model_id: str | None = None,
         extra["temperature"] = mc["temperature"]
     if mc.get("top_p") is not None:
         extra["top_p"] = mc["top_p"]
+    # Sticky routing: the same session id on every call keeps OpenRouter on one
+    # provider, which is what makes the prompt cache hit.
+    try:
+        extra["extra_headers"] = {"x-session-id": get_llm_session_id()}
+    except Exception as e:  # never block a reply over cache routing
+        logger.warning("llm session id unavailable: %s", e)
     return OpenAILike(
         id=mc.get("model") or model_id or handler.model,
         api_key=handler.api_key,
@@ -237,7 +243,7 @@ def build_functions(handler, contact, sender, active_tools, executed, *, is_asyn
 # --------------------------------------------------------------------------- #
 # Agent construction
 # --------------------------------------------------------------------------- #
-# Context builders for the Agent. WhatsBot owns the system prompt and history,
+# Context builders for the Agent. WhatsBot-Lite owns the system prompt and history,
 # so AGNO must not prepend/resolve anything of its own.
 _CONTEXT_OFF = dict(
     add_history_to_context=False,
@@ -280,7 +286,9 @@ def _extract_usage(run_output) -> dict | None:
     tt = getattr(metrics, "total_tokens", 0) or (pt + ct)
     if not (pt or ct or tt):
         return None
-    return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
+    cached = getattr(metrics, "cache_read_tokens", 0) or 0
+    return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt,
+            "cached_tokens": cached}
 
 
 def _extract_reply(run_output) -> str:
@@ -306,7 +314,7 @@ def _extract_reply(run_output) -> str:
     if content is None:
         return ""
     if not isinstance(content, str):
-        # Structured output is not used by WhatsBot's text agent; stringify
+        # Structured output is not used by WhatsBot-Lite's text agent; stringify
         # defensively so a misconfigured model never crashes the pipeline.
         content = str(content)
     return content.strip()
@@ -338,6 +346,7 @@ async def run_async(handler, contact, sender, messages, active_tools,
         "model": model_id, "engine": "agno",
         "prompt_tokens": (usage or {}).get("prompt_tokens", 0),
         "completion_tokens": (usage or {}).get("completion_tokens", 0),
+        "cached_tokens": (usage or {}).get("cached_tokens", 0),
         "has_tool_calls": bool(executed),
     })
     return EngineResult(reply=reply, executed_tools=executed, usage=usage)
@@ -366,6 +375,7 @@ def run_sync(handler, contact, sender, messages, active_tools,
         "model": model_id, "engine": "agno",
         "prompt_tokens": (usage or {}).get("prompt_tokens", 0),
         "completion_tokens": (usage or {}).get("completion_tokens", 0),
+        "cached_tokens": (usage or {}).get("cached_tokens", 0),
         "has_tool_calls": bool(executed),
     })
     return EngineResult(reply=reply, executed_tools=executed, usage=usage)

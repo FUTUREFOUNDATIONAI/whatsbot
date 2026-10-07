@@ -16,6 +16,26 @@ function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// The mention pattern depends only on the group's member names, not on the
+// message, so it is compiled once per roster instead of once per bubble.
+const ALL_KEYWORDS = ['todos', 'todes', 'todxs', 'all', 'everyone', 'geral'];
+const _mentionCache = new Map();
+function _mentionRegex(mentionNames) {
+  const key = (mentionNames || []).join('\u0000');
+  let re = _mentionCache.get(key);
+  if (!re) {
+    const names = (mentionNames || [])
+      .filter(Boolean)
+      .sort((a, b) => b.length - a.length)
+      .map(n => escapeRegex(escapeHtml(n)));
+    re = new RegExp('@(' + [...names, ...ALL_KEYWORDS].join('|') + ')', 'gi');
+    if (_mentionCache.size >= 20) _mentionCache.clear();
+    _mentionCache.set(key, re);
+  }
+  re.lastIndex = 0;
+  return re;
+}
+
 export function formatWhatsApp(text, mentionNames = []) {
   if (!text) return '';
   let s = escapeHtml(text);
@@ -51,13 +71,7 @@ export function formatWhatsApp(text, mentionNames = []) {
   // not shadow a longer one. The mention-all keywords are ALWAYS highlighted —
   // independent of whether any member names resolved — so @todos stands out the
   // same way a user mention does, even in groups with no named members.
-  const ALL_KEYWORDS = ['todos', 'todes', 'todxs', 'all', 'everyone', 'geral'];
-  const names = (mentionNames || [])
-    .filter(Boolean)
-    .sort((a, b) => b.length - a.length)
-    .map(n => escapeRegex(escapeHtml(n)));
-  const alts = [...names, ...ALL_KEYWORDS];
-  const mentionRe = new RegExp('@(' + alts.join('|') + ')', 'gi');
+  const mentionRe = _mentionRegex(mentionNames);
   s = s.replace(mentionRe, '<span style="color:#53bdeb;font-weight:600">@$1</span>');
 
   return s;

@@ -5,6 +5,7 @@
 import { h } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import htm from 'htm';
+import { ensureTailwindRuntime } from '../utils/tailwindRuntime.js';
 
 const html = htm.bind(h);
 
@@ -18,13 +19,18 @@ export function PluginScreen({ screen }) {
     if (!screen || !screen.component) return;
     setError(null);
     setComponent(null);
+    let cancelled = false;
+    // Plugin screens may use any Tailwind class, so the on-demand compiler is
+    // loaded before the screen renders (core pages use the prebuilt CSS).
+    const runtime = ensureTailwindRuntime().catch(() => { /* the screen still renders unstyled classes */ });
     const cached = _moduleCache.get(screen.component);
     if (cached) {
-      setComponent(() => cached);
-      return;
+      runtime.then(() => { if (!cancelled) setComponent(() => cached); });
+      return () => { cancelled = true; };
     }
-    import(screen.component)
+    runtime.then(() => import(screen.component))
       .then(mod => {
+        if (cancelled) return;
         const C = mod && (mod.default || mod.Component);
         if (typeof C !== 'function') {
           throw new Error('Plugin module must export a default Preact component');
@@ -32,7 +38,8 @@ export function PluginScreen({ screen }) {
         _moduleCache.set(screen.component, C);
         setComponent(() => C);
       })
-      .catch(e => setError(String(e && e.message || e)));
+      .catch(e => { if (!cancelled) setError(String(e && e.message || e)); });
+    return () => { cancelled = true; };
   }, [screen && screen.component]);
 
   if (error) {

@@ -1,10 +1,13 @@
 // ── Avatar URL (with cache-busting version) ──────────────────────
 // `v` is the cached file's mtime (avatar_v from the API); appending it makes
 // the browser re-fetch when the photo changes instead of using the stale image.
+// `v` is 0 when no photo is cached for the contact yet: there is nothing to
+// download, so return null and let the silhouette stand in (asking for it would
+// only produce a 404). Once the photo is fetched the server sends `avatar_v`
+// (list refresh or `avatar_updated`) and the image appears.
 export function avatarUrl(phone, v) {
-  if (!phone) return null;
-  const base = `/statics/avatars/${phone}.jpg`;
-  return v ? `${base}?v=${v}` : base;
+  if (!phone || !v) return null;
+  return `/statics/avatars/${phone}.jpg?v=${v}`;
 }
 
 // ── Phone formatting ─────────────────────────────────────────────
@@ -17,20 +20,36 @@ export function formatPhoneDisplay(phone) {
 
 // ── Time formatting ──────────────────────────────────────────────
 
+// Building an Intl formatter is far more expensive than using one, and
+// `toLocale*String(locale, opts)` builds a fresh one on every call. A chat with
+// hundreds of bubbles formats hundreds of times per render, so the formatters
+// are created once per option set and reused (same output as the old calls).
+const _dtfCache = new Map();
+function _dtf(opts) {
+  const key = JSON.stringify(opts);
+  let f = _dtfCache.get(key);
+  if (!f) {
+    f = new Intl.DateTimeFormat('pt-BR', opts);
+    _dtfCache.set(key, f);
+  }
+  return f;
+}
+const _TIME = { hour: '2-digit', minute: '2-digit' };
+
 export function formatTime(ts) {
   if (!ts) return '';
   const d = new Date(ts * 1000);
   const now = new Date();
   const diffDays = Math.floor((now - d) / 86400000);
-  if (diffDays === 0) return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  if (diffDays === 0) return _dtf(_TIME).format(d);
   if (diffDays === 1) return 'Ontem';
-  if (diffDays < 7) return d.toLocaleDateString('pt-BR', { weekday: 'short' });
-  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+  if (diffDays < 7) return _dtf({ weekday: 'short' }).format(d);
+  return _dtf({ day: '2-digit', month: '2-digit' }).format(d);
 }
 
 export function formatBubbleTime(ts) {
   if (!ts) return '';
-  return new Date(ts * 1000).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  return _dtf(_TIME).format(new Date(ts * 1000));
 }
 
 export function isSameDay(tsA, tsB) {
@@ -61,10 +80,10 @@ export function formatDateSeparator(ts) {
   if (diffDays === 0) return 'HOJE';
   if (diffDays === 1) return 'ONTEM';
   if (diffDays >= 2 && diffDays <= 6) {
-    return d.toLocaleDateString('pt-BR', { weekday: 'long' });
+    return _dtf({ weekday: 'long' }).format(d);
   }
   const sameYear = d.getFullYear() === now.getFullYear();
-  return d.toLocaleDateString('pt-BR', sameYear
+  return _dtf(sameYear
     ? { day: 'numeric', month: 'long' }
-    : { day: 'numeric', month: 'long', year: 'numeric' });
+    : { day: 'numeric', month: 'long', year: 'numeric' }).format(d);
 }

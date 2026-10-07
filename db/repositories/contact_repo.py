@@ -169,7 +169,7 @@ def mark_as_read(contact_id: int) -> list[str]:
 
 def unread_conversation_count() -> int:
     """Number of non-archived conversations that have unread messages — used for the
-    browser-tab badge (e.g. "(3) WhatsBot"). Counts a conversation once regardless of
+    browser-tab badge (e.g. "(3) WhatsBot-Lite"). Counts a conversation once regardless of
     how many messages are unread, mirroring the sidebar badge visibility."""
     with read_connect() as conn:
         return conn.execute(
@@ -414,14 +414,17 @@ def list_contacts(q: str = "", archived: bool = False) -> list[dict]:
     with read_connect() as conn:
         rows = conn.execute(sql, {"archived": 1 if archived else 0}).mappings().all()
 
-        # Tags de todos os contatos numa query só. Uma por contato dentro do
-        # laço custava ~29 mil queries/dia para devolver ~120 linhas no total.
+        # Tags de todos os contatos listados numa query só, em ordem de tag
+        # (mesma ordem do upstream). Uma por contato dentro do laço custava
+        # ~29 mil queries/dia; filtrar pelos ids listados evita trazer as tags
+        # de todos os contatos a cada listagem.
         tags_by_contact: dict[int, list[str]] = {}
         if rows:
             for tag_row in conn.execute(
                 select(contact_tags.c.contact_id, tags.c.name)
                 .join(tags, tags.c.id == contact_tags.c.tag_id)
                 .where(contact_tags.c.contact_id.in_([r["id"] for r in rows]))
+                .order_by(tags.c.id)
             ).all():
                 tags_by_contact.setdefault(tag_row.contact_id, []).append(tag_row.name)
 
